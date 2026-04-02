@@ -1,0 +1,22 @@
+config_key: "rel-amazon/user-ltv"
+domain: "relbench"
+task_type: "regression"
+metric: "mae"
+num_outputs: 1
+max_seq_len: 256
+
+d_model: 128
+n_layers: 4
+d_state: 32
+mimo_rank: 4
+dropout: 0.1
+
+lr: 0.001
+weight_decay: 1e-5
+min_lr: 1e-6
+batch_size: 64
+epochs: 100
+patience: 20
+
+use_wandb: false
+save_path: "checkpoints/edgemamba3_amazon_ltv.pt"
