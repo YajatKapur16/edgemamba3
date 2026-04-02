@@ -1,0 +1,57 @@
+# ── Python ────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+*.so
+
+# ── Virtual environments ──────────────────────────────────────────
+.venv/
+venv/
+env/
+.conda/
+
+# ── IDE / Editor ──────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+
+# ── Jupyter ───────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Training artifacts ────────────────────────────────────────────
+checkpoints/
+results/
+wandb/
+runs/
+*.pt
+*.pth
+*.ckpt
+
+# ── Data caches ───────────────────────────────────────────────────
+data/cache/
+data_cache/
+*.zip
+*.tar.gz
+
+# ── OS files ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ── Docker ────────────────────────────────────────────────────────
+*.log
+
+# ── Temp / helper scripts ────────────────────────────────────────
+_fix_*.py
+_make_*.py
+_make_*.ps1
+_commit_msg.txt
