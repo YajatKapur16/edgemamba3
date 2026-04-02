@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "edgemamba3"
+version = "0.1.0"
+description = "EdgeMamba-3: Edge-Centric SSM for Graph Learning"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch==2.5.0",
+    "torchvision==0.20.0",
+    "torch-geometric==2.5.3",
+    "pyg-lib",
+    "torch-scatter",
+    "torch-sparse",
+    "torch-cluster",
+    "torch-spline-conv",
+    "relbench==1.1.0",
+    "pytorch-frame==0.2.3",
+    "optuna==3.5.0",
+    "wandb==0.16.3",
+    "einops==0.7.0",
+    "pyyaml==6.0.1",
+    "tqdm==4.66.2",
+    "scikit-learn==1.4.0",
+    "pandas==2.1.4",
+    "numpy==1.26.3",
+    "matplotlib==3.8.2",
+    "seaborn==0.13.1",
+    "pytest==7.4.4",
+    "huggingface_hub",
+    "transformers",
+    "tilelang==0.1.8",
+    "quack-kernels==0.3.1"
+]
+
+[tool.uv]
+find-links = [
+    "https://data.pyg.org/whl/torch-2.5.0+cu118.html"
+]
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "models",
+    "baselines",
+    "train",
+    "configs",
+    "scripts",
+    "ablations"
+]

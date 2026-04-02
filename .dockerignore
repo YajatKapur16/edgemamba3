@@ -1,0 +1,15 @@
+# .dockerignore
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.gitignore
+.git
+data/cache
+checkpoints
+logs
+results
+*.pt
+*.pth
+.vscode
+.idea
