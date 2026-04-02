@@ -1,0 +1,70 @@
+# docker/docker-compose.yml
+# Run from project root: docker compose -f docker/docker-compose.yml up --build
+
+services:
+  edgemamba3:
+    build:
+      context: .. # build context is project root
+      dockerfile: docker/Dockerfile
+    image: edgemamba3:latest
+    container_name: edgemamba3_run
+
+    # ── GPU passthrough ───────────────────────────────────────────────────────
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all # use all available GPUs
+              capabilities: [ gpu ]
+
+    # ── Environment ───────────────────────────────────────────────────────────
+    environment:
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - WANDB_API_KEY=${WANDB_API_KEY:-""}
+      - PYTHONUNBUFFERED=1 # real-time stdout (no buffering)
+
+    # ── Volume mounts ─────────────────────────────────────────────────────────
+    volumes:
+      # Source code: bind-mount local code so changes take effect without rebuild
+      # Only rebuild (--build) when Dockerfile or pyproject.toml dependencies change
+      - ../models:/workspace/models
+      - ../scripts:/workspace/scripts
+      - ../train:/workspace/train
+      - ../data:/workspace/data
+      - ../configs:/workspace/configs
+      - ../baselines:/workspace/baselines
+      - ../ablations:/workspace/ablations
+      - ../tests:/workspace/tests
+
+      # Data cache: persists downloaded datasets across container restarts
+      - edgemamba3_data:/workspace/data/cache
+
+      # Checkpoints: persists trained model weights
+      - edgemamba3_checkpoints:/workspace/checkpoints
+
+      # Logs: persists all run logs
+      - edgemamba3_logs:/workspace/logs
+
+      # Results: persists ablation_results.csv
+      - edgemamba3_results:/workspace/results
+
+    # ── Shared memory ─────────────────────────────────────────────────────────
+    # Required for PyTorch DataLoader with num_workers > 0
+    shm_size: "12gb"
+
+    # ── Resource limits ───────────────────────────────────────────────────────
+    ulimits:
+      memlock: -1
+      stack: 67108864
+
+    # Keep container running for interactive use
+    stdin_open: true
+    tty: true
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  edgemamba3_data:
+  edgemamba3_checkpoints:
+  edgemamba3_logs:
+  edgemamba3_results:
