@@ -1,0 +1,222 @@
+# train/trainer.py
+
+import torch
+import torch.nn as nn
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from tqdm import tqdm
+import numpy as np
+import sys
+from typing import Optional
+
+
+class Trainer:
+    """
+    Unified trainer for both LRGB and RelBench experiments.
+
+    Handles:
+        - AdamW optimiser + cosine LR schedule
+        - Gradient clipping (prevents NaN loss)
+        - Early stopping with patience
+        - W&B logging (optional)
+        - Best checkpoint saving
+    """
+    def __init__(
+        self,
+        model: nn.Module,
+        config: dict,
+        device: str = "cuda",
+        run_name: str = "edgemamba3",
+    ):
+        self.model    = model.to(device)
+        self.config   = config
+        self.device   = device
+        self.run_name = run_name
+
+        self.opt = AdamW(
+            model.parameters(),
+            lr=float(config["lr"]),
+            weight_decay=float(config.get("weight_decay", 1e-5)),
+            betas=(0.9, 0.999),
+        )
+        self.sched = CosineAnnealingLR(
+            self.opt,
+            T_max=config["epochs"],
+            eta_min=float(config.get("min_lr", 1e-6)),
+        )
+
+        if config.get("use_wandb", False):
+            try:
+                import wandb
+                wandb.init(project="edgemamba3", name=run_name, config=config)
+                self._wandb = True
+            except ImportError:
+                print("wandb not installed, skipping W&B logging.")
+                self._wandb = False
+        else:
+            self._wandb = False
+
+    # ── LRGB Training Step ─────────────────────────────────────────────────────
+    def train_epoch_lrgb(self, loader) -> float:
+        self.model.train()
+        total_loss = 0.0
+        limit = self.config.get("limit_batches")
+        for i, batch in enumerate(tqdm(loader, desc="Train", leave=False, file=sys.stdout, mininterval=2.0)):
+            if limit and i >= limit: break
+            batch = batch.to(self.device)
+            self.opt.zero_grad()
+
+            pred  = self.model(batch)
+            loss  = self.model.loss(pred, batch.y.to(self.device))
+
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            self.opt.step()
+
+            total_loss += loss.item()
+
+        self.sched.step()
+        return total_loss / len(loader)
+
+    # ── RelBench Training Step ─────────────────────────────────────────────────
+    def train_epoch_relbench(self, loader) -> float:
+        self.model.train()
+        total_loss = 0.0
+        limit = self.config.get("limit_batches")
+        for i, (seq, dt, mask, labels) in enumerate(tqdm(loader, desc="Train", leave=False, file=sys.stdout, mininterval=2.0)):
+            if limit and i >= limit: break
+            seq    = seq.to(self.device)
+            dt     = dt.to(self.device)
+            mask   = mask.to(self.device)
+            labels = labels.to(self.device)
+
+            self.opt.zero_grad()
+            pred  = self.model(seq, dt, mask)
+            loss  = self.model.loss(pred.squeeze(-1), labels)
+
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            self.opt.step()
+
+            total_loss += loss.item()
+
+        self.sched.step()
+        return total_loss / len(loader)
+
+    # ── Evaluation ─────────────────────────────────────────────────────────────
+    @torch.no_grad()
+    def evaluate_lrgb(self, loader, metric: str) -> float:
+        from train.metrics import compute_metric
+        self.model.eval()
+        all_preds, all_labels = [], []
+        limit = self.config.get("limit_batches")
+
+        for i, batch in enumerate(tqdm(loader, desc="Eval", leave=False, file=sys.stdout, mininterval=2.0)):
+            if limit and i >= limit: break
+            batch = batch.to(self.device)
+            pred  = self.model(batch)
+            all_preds.append(pred.cpu())
+            all_labels.append(batch.y.cpu())
+
+        preds  = torch.cat(all_preds, dim=0).numpy()
+        labels = torch.cat(all_labels, dim=0).numpy()
+        score = compute_metric(preds, labels, metric)
+        return score, preds, labels
+
+    @torch.no_grad()
+    def evaluate_relbench(self, loader, metric: str) -> float:
+        from train.metrics import compute_metric
+        self.model.eval()
+        all_preds, all_labels = [], []
+        limit = self.config.get("limit_batches")
+
+        for i, (seq, dt, mask, labels) in enumerate(tqdm(loader, desc="Eval", leave=False, file=sys.stdout, mininterval=2.0)):
+            if limit and i >= limit: break
+            seq  = seq.to(self.device)
+            dt   = dt.to(self.device)
+            mask = mask.to(self.device)
+            pred = self.model(seq, dt, mask)
+            all_preds.append(pred.squeeze(-1).cpu())
+            all_labels.append(labels)
+
+        preds  = torch.cat(all_preds).numpy()
+        labels = torch.cat(all_labels).numpy()
+        score = compute_metric(preds, labels, metric)
+        return score, preds, labels
+
+    # ── Main Training Loop ─────────────────────────────────────────────────────
+    def fit(
+        self,
+        train_loader,
+        val_loader,
+        domain: str,
+        metric: str,
+        save_path: str = "best_model.pt",
+    ) -> float:
+        """
+        Full training loop with early stopping.
+        Returns best validation score.
+        """
+        higher_is_better = metric in ("ap", "auroc")
+        best_val  = -float("inf") if higher_is_better else float("inf")
+        patience  = 0
+        max_pat   = self.config.get("patience", 30)
+
+        train_fn = (self.train_epoch_lrgb if domain == "lrgb"
+                    else self.train_epoch_relbench)
+        eval_fn  = (self.evaluate_lrgb if domain == "lrgb"
+                    else self.evaluate_relbench)
+
+        for epoch in range(1, self.config["epochs"] + 1):
+            train_loss = train_fn(train_loader)
+            val_score, _, _  = eval_fn(val_loader, metric)
+
+            is_better = (val_score > best_val if higher_is_better
+                         else val_score < best_val)
+
+            if is_better:
+                best_val  = val_score
+                patience  = 0
+                torch.save(self.model.state_dict(), save_path)
+            else:
+                patience += 1
+
+            lr = self.opt.param_groups[0]["lr"]
+            print(f"Epoch {epoch:03d} | Loss: {train_loss:.4f} | "
+                  f"Val {metric.upper()}: {val_score:.4f} | "
+                  f"Best: {best_val:.4f} | LR: {lr:.2e} | "
+                  f"Pat: {patience}/{max_pat}")
+
+            if self._wandb:
+                import wandb
+                wandb.log({
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    f"val_{metric}": val_score,
+                    "lr": lr,
+                })
+
+            if patience >= max_pat:
+                print(f"Early stopping at epoch {epoch}.")
+                break
+
+        return best_val
+
+    @torch.no_grad()
+    def test(self, test_loader, domain: str, metric: str,
+             checkpoint_path: str = "best_model.pt",
+             report_path: str = None, task_type: str = None) -> float:
+        """Load best checkpoint and evaluate on test set."""
+        self.model.load_state_dict(torch.load(checkpoint_path,
+                                               map_location=self.device))
+        eval_fn = (self.evaluate_lrgb if domain == "lrgb"
+                   else self.evaluate_relbench)
+        score, preds, labels = eval_fn(test_loader, metric)
+        print(f"Test {metric.upper()}: {score:.4f}")
+        
+        if report_path and task_type:
+            from train.metrics import generate_eval_report
+            generate_eval_report(preds, labels, task_type, report_path)
+            print(f"Detailed metric report saved to: {report_path}")
+            
+        return score
