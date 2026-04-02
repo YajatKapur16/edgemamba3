@@ -155,7 +155,8 @@ class EdgeMamba3(nn.Module):
             # Module 1 & 2: Embedding and Serialization per graph
             line_edge_index, orig_edge_index, dist_matrix, x_node, x_edge = get_cached_line_graph_and_dist(data)
             
-            h = self.embed(x_node, x_edge, orig_edge_index.to(device))
+            # Move tensors to device (graphs are on CPU after unbatching)
+            h = self.embed(x_node.to(device), x_edge.to(device), orig_edge_index.to(device))
             h_seq, perm, _ = self.serializer(h, line_edge_index.to(device))
             
             h_seqs.append(h_seq)
