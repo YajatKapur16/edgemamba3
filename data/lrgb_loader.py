@@ -1,6 +1,9 @@
 # data/lrgb_loader.py
 
+import os
 import torch
+import torch.distributed as dist
+from torch.utils.data.distributed import DistributedSampler
 
 # PyTorch 2.6+ defaults weights_only=True, which breaks PyG dataset loading.
 # Patch to restore previous behavior.
@@ -39,8 +42,6 @@ def _fix_missing_edge_attr(data: Data) -> Data:
         data.edge_attr = torch.ones(data.num_edges, 1)
     return data
 
-
-import os
 
 def load_lrgb(
     dataset_name: str,
@@ -81,22 +82,28 @@ def load_lrgb(
     actual_workers = 0 if os.name == 'nt' else num_workers
     persistent = True if actual_workers > 0 else False
 
-    # DataLoaders
-    train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=True,
-        num_workers=actual_workers, pin_memory=True,
-        drop_last=True, persistent_workers=persistent
-    )
-    val_loader = DataLoader(
-        val_ds, batch_size=batch_size, shuffle=False,
-        num_workers=actual_workers, pin_memory=True,
-        persistent_workers=persistent
-    )
-    test_loader = DataLoader(
-        test_ds, batch_size=batch_size, shuffle=False,
-        num_workers=actual_workers, pin_memory=True,
-        persistent_workers=persistent
-    )
+    # DDP DistributedSampler support
+    is_dist = dist.is_available() and dist.is_initialized()
+    train_sampler = DistributedSampler(train_ds, shuffle=True) if is_dist else None
+    val_sampler   = DistributedSampler(val_ds, shuffle=False) if is_dist else None
+    test_sampler  = DistributedSampler(test_ds, shuffle=False) if is_dist else None
+
+    # DataLoader wrapper
+    def create_loader(ds, bs, shuffle, drop_last, sampler):
+        return DataLoader(
+            ds,
+            batch_size=bs,
+            shuffle=(shuffle if sampler is None else False),
+            sampler=sampler,
+            num_workers=actual_workers,
+            pin_memory=True,
+            drop_last=drop_last,
+            persistent_workers=persistent
+        )
+
+    train_loader = create_loader(train_ds, batch_size, True, True, train_sampler)
+    val_loader   = create_loader(val_ds, batch_size, False, False, val_sampler)
+    test_loader  = create_loader(test_ds, batch_size, False, False, test_sampler)
 
     metadata = {
         "node_dim": node_dim,

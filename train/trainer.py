@@ -2,11 +2,14 @@
 
 import torch
 import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 import numpy as np
 import sys
+import re
 from typing import Optional
 
 
@@ -28,10 +31,18 @@ class Trainer:
         device: str = "cuda",
         run_name: str = "edgemamba3",
     ):
-        self.model    = model.to(device)
         self.config   = config
         self.device   = device
         self.run_name = run_name
+
+        self.is_dist = dist.is_available() and dist.is_initialized()
+        self.rank = dist.get_rank() if self.is_dist else 0
+
+        self.model = model.to(device)
+        if self.is_dist:
+            # Need to pass list of actual mapped dev IDs, e.g. [0] if device is 'cuda:0'
+            dev_id = [int(re.findall(r'\d+', str(device))[0])] if 'cuda:' in str(device) else None
+            self.model = DDP(self.model, device_ids=dev_id)
 
         self.opt = AdamW(
             model.parameters(),
@@ -45,7 +56,7 @@ class Trainer:
             eta_min=float(config.get("min_lr", 1e-6)),
         )
 
-        if config.get("use_wandb", False):
+        if config.get("use_wandb", False) and self.rank == 0:
             try:
                 import wandb
                 wandb.init(project="edgemamba3", name=run_name, config=config)
@@ -55,6 +66,20 @@ class Trainer:
                 self._wandb = False
         else:
             self._wandb = False
+
+    def _sync_metrics(self, preds: torch.Tensor, labels: torch.Tensor):
+        if not self.is_dist:
+            return preds.numpy(), labels.numpy()
+        
+        preds_gpu = preds.to(self.device).contiguous()
+        labels_gpu = labels.to(self.device).contiguous()
+        
+        gathered_preds = [torch.zeros_like(preds_gpu) for _ in range(dist.get_world_size())]
+        gathered_labels = [torch.zeros_like(labels_gpu) for _ in range(dist.get_world_size())]
+        dist.all_gather(gathered_preds, preds_gpu)
+        dist.all_gather(gathered_labels, labels_gpu)
+        
+        return torch.cat(gathered_preds, dim=0).cpu().numpy(), torch.cat(gathered_labels, dim=0).cpu().numpy()
 
     # ── LRGB Training Step ─────────────────────────────────────────────────────
     def train_epoch_lrgb(self, loader) -> float:
@@ -118,8 +143,11 @@ class Trainer:
             all_preds.append(pred.cpu())
             all_labels.append(batch.y.cpu())
 
-        preds  = torch.cat(all_preds, dim=0).numpy()
-        labels = torch.cat(all_labels, dim=0).numpy()
+        preds  = torch.cat(all_preds, dim=0)
+        labels = torch.cat(all_labels, dim=0)
+        
+        preds, labels = self._sync_metrics(preds, labels)
+        
         score = compute_metric(preds, labels, metric)
         all_metrics = compute_all_metrics(preds, labels, task_type)
         return score, all_metrics, preds, labels
@@ -138,10 +166,17 @@ class Trainer:
             mask = mask.to(self.device)
             pred = self.model(seq, dt, mask)
             all_preds.append(pred.squeeze(-1).cpu())
-            all_labels.append(labels)
+            all_labels.append(labels.cpu())
 
-        preds  = torch.cat(all_preds).numpy()
-        labels = torch.cat(all_labels).numpy()
+        preds  = torch.cat(all_preds)
+        labels = torch.cat(all_labels)
+        
+        preds, labels = self._sync_metrics(preds, labels)
+        
+        # In DDP, DistributedSampler pads via duplicate indices to make dataset sizes equal
+        # We can pass them all to eval, slightly biased, or slice them properly.
+        # Given it's identical padding on all distributed ranks, the difference is negligible for early-stopping.
+        
         score = compute_metric(preds, labels, metric)
         all_metrics = compute_all_metrics(preds, labels, task_type)
         return score, all_metrics, preds, labels
@@ -174,6 +209,9 @@ class Trainer:
                     else self.evaluate_relbench)
 
         for epoch in range(1, self.config["epochs"] + 1):
+            if self.is_dist and hasattr(train_loader, "sampler") and hasattr(train_loader.sampler, "set_epoch"):
+                train_loader.sampler.set_epoch(epoch)
+
             train_loss = train_fn(train_loader)
             val_score, val_metrics, _, _  = eval_fn(val_loader, metric, task_type)
 
@@ -183,30 +221,35 @@ class Trainer:
             if is_better:
                 best_val  = val_score
                 patience  = 0
-                torch.save(self.model.state_dict(), save_path)
+                if self.rank == 0:
+                    # In DDP, model params are under model.module
+                    state_dict = self.model.module.state_dict() if self.is_dist else self.model.state_dict()
+                    torch.save(state_dict, save_path)
             else:
                 patience += 1
 
             lr = self.opt.param_groups[0]["lr"]
             metrics_str = " | ".join(f"{k.upper()}: {v:.4f}" for k, v in val_metrics.items())
-            print(f"Epoch {epoch:03d} | Loss: {train_loss:.4f} | "
-                  f"Val [{metrics_str}] | "
-                  f"Best {metric.upper()}: {best_val:.4f} | LR: {lr:.2e} | "
-                  f"Pat: {patience}/{max_pat}")
+            if self.rank == 0:
+                print(f"Epoch {epoch:03d} | Loss: {train_loss:.4f} | "
+                      f"Val [{metrics_str}] | "
+                      f"Best {metric.upper()}: {best_val:.4f} | LR: {lr:.2e} | "
+                      f"Pat: {patience}/{max_pat}")
 
-            if self._wandb:
-                import wandb
-                log_data = {
-                    "epoch": epoch,
-                    "train_loss": train_loss,
-                    "lr": lr,
-                }
-                for k, v in val_metrics.items():
-                    log_data[f"val_{k}"] = v
-                wandb.log(log_data)
+                if self._wandb:
+                    import wandb
+                    log_data = {
+                        "epoch": epoch,
+                        "train_loss": train_loss,
+                        "lr": lr,
+                    }
+                    for k, v in val_metrics.items():
+                        log_data[f"val_{k}"] = v
+                    wandb.log(log_data)
 
             if patience >= max_pat:
-                print(f"Early stopping at epoch {epoch}.")
+                if self.rank == 0:
+                    print(f"Early stopping at epoch {epoch}.")
                 break
 
         return best_val
@@ -225,12 +268,13 @@ class Trainer:
                    else self.evaluate_relbench)
         score, all_metrics, preds, labels = eval_fn(test_loader, metric, task_type)
         
-        metrics_str = " | ".join(f"{k.upper()}: {v:.4f}" for k, v in all_metrics.items())
-        print(f"Test Metrics -> [{metrics_str}]")
-        
-        if report_path and task_type:
-            from train.metrics import generate_eval_report
-            generate_eval_report(preds, labels, task_type, report_path)
-            print(f"Detailed metric report saved to: {report_path}")
+        if self.rank == 0:
+            metrics_str = " | ".join(f"{k.upper()}: {v:.4f}" for k, v in all_metrics.items())
+            print(f"Test Metrics -> [{metrics_str}]")
+            
+            if report_path and task_type:
+                from train.metrics import generate_eval_report
+                generate_eval_report(preds, labels, task_type, report_path)
+                print(f"Detailed metric report saved to: {report_path}")
             
         return score

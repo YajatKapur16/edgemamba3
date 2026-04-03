@@ -1,8 +1,10 @@
 import os
 import time
-# data/relbench_loader.py
-
 import torch
+import torch.distributed as dist
+from torch.utils.data.distributed import DistributedSampler
+
+# data/relbench_loader.py
 
 # PyTorch 2.6+ defaults weights_only=True, which breaks cached dataset loading.
 _original_torch_load = torch.load
@@ -175,14 +177,17 @@ class RelBenchEventDataset(Dataset):
 
 def collate_relbench(batch):
     """
-    Pads sequences to the same length within a batch.
+    Pads sequences to the nearest length multiple of 64 within a batch.
     """
     seqs, dts, masks, labels = zip(*batch)
     max_len = max(s.shape[0] for s in seqs)
+    
+    # Bucket lengths to nearest multiple of 64 to avoid Triton recompilation storms
+    bucketed_len = ((max_len + 63) // 64) * 64
 
-    padded_seqs  = torch.zeros(len(seqs), max_len, seqs[0].shape[-1])
-    padded_dts   = torch.zeros(len(seqs), max_len)
-    padded_masks = torch.zeros(len(seqs), max_len, dtype=torch.bool)
+    padded_seqs  = torch.zeros(len(seqs), bucketed_len, seqs[0].shape[-1])
+    padded_dts   = torch.zeros(len(seqs), bucketed_len)
+    padded_masks = torch.zeros(len(seqs), bucketed_len, dtype=torch.bool)
 
     for i, (seq, dt, mask) in enumerate(zip(seqs, dts, masks)):
         L = seq.shape[0]
@@ -227,10 +232,7 @@ def load_relbench(
         meta = cached_data["meta"]
         print(f"  Loaded in {time.time()-t0:.2f}s", flush=True)
         
-        train_loader = DataLoader(splits["train"], batch_size=batch_size, shuffle=True, collate_fn=collate_relbench, num_workers=num_workers, pin_memory=True)
-        val_loader   = DataLoader(splits["val"],   batch_size=batch_size, shuffle=False, collate_fn=collate_relbench, num_workers=num_workers, pin_memory=True)
-        test_loader  = DataLoader(splits["test"],  batch_size=batch_size, shuffle=False, collate_fn=collate_relbench, num_workers=num_workers, pin_memory=True)
-        return train_loader, val_loader, test_loader, meta
+        return _build_loaders_from_splits(splits, meta, batch_size, num_workers, True)
 
     print(f"[RelBench Loader] No cache found. Processing {config_key} from scratch...", flush=True)
     max_seq_len = kwargs.get("max_seq_len", 256) # Extract max_seq_len from kwargs
@@ -304,40 +306,57 @@ def load_relbench(
     torch.save({"splits": splits, "meta": meta}, cache_path)
     print(f"  Saved in {time.time()-t0:.2f}s", flush=True)
 
+    # ── DataLoaders ───────────────────────────────────────────────────────────
     actual_workers = 0 if os.name == 'nt' else num_workers
     persistent = True if actual_workers > 0 else False
-
-    # ── DataLoaders ───────────────────────────────────────────────────────────
-    train_loader = DataLoader(
-        splits["train"], batch_size=batch_size, shuffle=True,
-        collate_fn=collate_relbench, num_workers=actual_workers, pin_memory=True,
-        drop_last=True, persistent_workers=persistent
+    
+    train_loader, val_loader, test_loader, metadata = _build_loaders_from_splits(
+        splits, meta, batch_size, actual_workers, persistent
     )
-    val_loader = DataLoader(
-        splits["val"], batch_size=batch_size, shuffle=False,
-        collate_fn=collate_relbench, num_workers=actual_workers, pin_memory=True,
-        persistent_workers=persistent
-    )
-    test_loader = DataLoader(
-        splits["test"], batch_size=batch_size, shuffle=False,
-        collate_fn=collate_relbench, num_workers=actual_workers, pin_memory=True,
-        persistent_workers=persistent
-    )
-
-    metadata = {
-        "event_feat_dim": event_feat_dim,
-        "num_outputs": cfg["num_outputs"],
-        "task_type": cfg["task_type"],
-        "metric": cfg["metric"],
-        "train_size": len(splits["train"]),
-        "val_size": len(splits["val"]),
-        "test_size": len(splits["test"]),
-    }
 
     print(f"  Train: {metadata['train_size']} | Val: {metadata['val_size']} "
           f"| Test: {metadata['test_size']}")
     print(f"  event_feat_dim={event_feat_dim}, max_seq_len={max_seq_len}")
 
+    return train_loader, val_loader, test_loader, metadata
+
+
+def _build_loaders_from_splits(splits, meta, batch_size, actual_workers, persistent):
+    """Helper to build loaders with DDP samplers if initialized."""
+    
+    is_dist = dist.is_available() and dist.is_initialized()
+    train_sampler = DistributedSampler(splits["train"], shuffle=True) if is_dist else None
+    val_sampler   = DistributedSampler(splits["val"], shuffle=False) if is_dist else None
+    test_sampler  = DistributedSampler(splits["test"], shuffle=False) if is_dist else None
+
+    # DataLoader wrapper
+    def create_loader(split_data, bs, shuffle, drop_last, sampler):
+        return DataLoader(
+            split_data, 
+            batch_size=bs,
+            shuffle=(shuffle if sampler is None else False),
+            sampler=sampler,
+            collate_fn=collate_relbench,
+            num_workers=actual_workers,
+            pin_memory=True,
+            drop_last=drop_last,
+            persistent_workers=persistent
+        )
+
+    train_loader = create_loader(splits["train"], batch_size, True, True, train_sampler)
+    val_loader   = create_loader(splits["val"], batch_size, False, False, val_sampler)
+    test_loader  = create_loader(splits["test"], batch_size, False, False, test_sampler)
+
+    metadata = {
+        "event_feat_dim": meta["event_feat_dim"],
+        "num_outputs": meta["num_outputs"],
+        "task_type": meta["task_type"],
+        "metric": meta["metric"],
+        "train_size": len(splits["train"]),
+        "val_size": len(splits["val"]),
+        "test_size": len(splits["test"]),
+    }
+    
     return train_loader, val_loader, test_loader, metadata
 
 

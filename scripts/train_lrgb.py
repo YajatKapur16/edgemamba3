@@ -3,6 +3,7 @@
 import argparse
 import yaml
 import torch
+import torch.distributed as dist
 import os
 import sys
 
@@ -18,8 +19,17 @@ def main(config_path: str):
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    os.makedirs("checkpoints", exist_ok=True)
+    local_rank = int(os.environ.get("LOCAL_RANK", -1))
+    if local_rank != -1:
+        dist.init_process_group("nccl")
+        device = f"cuda:{local_rank}"
+        torch.cuda.set_device(device)
+        if dist.get_rank() == 0:
+            os.makedirs("checkpoints", exist_ok=True)
+        dist.barrier()
+    else:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        os.makedirs("checkpoints", exist_ok=True)
 
     # Run 5 seeds for statistical significance
     all_test_scores = []
@@ -60,15 +70,17 @@ def main(config_path: str):
             metric=cfg["metric"], checkpoint_path=save_path,
         )
         all_test_scores.append(test_score)
-        print(f"Seed {seed}: Val={best_val:.4f}, Test={test_score:.4f}")
+        if local_rank in [-1, 0]:
+            print(f"Seed {seed}: Val={best_val:.4f}, Test={test_score:.4f}")
 
-    mean = sum(all_test_scores) / len(all_test_scores)
-    std  = (sum((s-mean)**2 for s in all_test_scores) / len(all_test_scores)) ** 0.5
+    if local_rank in [-1, 0]:
+        mean = sum(all_test_scores) / len(all_test_scores)
+        std  = (sum((s-mean)**2 for s in all_test_scores) / len(all_test_scores)) ** 0.5
 
-    print(f"\n{'='*50}")
-    print(f"FINAL: {cfg['metric'].upper()} = {mean:.4f} ± {std:.4f}")
-    print(f"Individual: {[round(s,4) for s in all_test_scores]}")
-    print(f"{'='*50}")
+        print(f"\n{'='*50}")
+        print(f"FINAL: {cfg['metric'].upper()} = {mean:.4f} ± {std:.4f}")
+        print(f"Individual: {[round(s,4) for s in all_test_scores]}")
+        print(f"{'='*50}")
 
 
 if __name__ == "__main__":
