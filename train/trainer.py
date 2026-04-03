@@ -105,8 +105,8 @@ class Trainer:
 
     # ── Evaluation ─────────────────────────────────────────────────────────────
     @torch.no_grad()
-    def evaluate_lrgb(self, loader, metric: str) -> float:
-        from train.metrics import compute_metric
+    def evaluate_lrgb(self, loader, metric: str, task_type: str):
+        from train.metrics import compute_metric, compute_all_metrics
         self.model.eval()
         all_preds, all_labels = [], []
         limit = self.config.get("limit_batches")
@@ -121,11 +121,12 @@ class Trainer:
         preds  = torch.cat(all_preds, dim=0).numpy()
         labels = torch.cat(all_labels, dim=0).numpy()
         score = compute_metric(preds, labels, metric)
-        return score, preds, labels
+        all_metrics = compute_all_metrics(preds, labels, task_type)
+        return score, all_metrics, preds, labels
 
     @torch.no_grad()
-    def evaluate_relbench(self, loader, metric: str) -> float:
-        from train.metrics import compute_metric
+    def evaluate_relbench(self, loader, metric: str, task_type: str):
+        from train.metrics import compute_metric, compute_all_metrics
         self.model.eval()
         all_preds, all_labels = [], []
         limit = self.config.get("limit_batches")
@@ -142,7 +143,8 @@ class Trainer:
         preds  = torch.cat(all_preds).numpy()
         labels = torch.cat(all_labels).numpy()
         score = compute_metric(preds, labels, metric)
-        return score, preds, labels
+        all_metrics = compute_all_metrics(preds, labels, task_type)
+        return score, all_metrics, preds, labels
 
     # ── Main Training Loop ─────────────────────────────────────────────────────
     def fit(
@@ -152,11 +154,15 @@ class Trainer:
         domain: str,
         metric: str,
         save_path: str = "best_model.pt",
+        task_type: str = None,
     ) -> float:
         """
         Full training loop with early stopping.
         Returns best validation score.
         """
+        if task_type is None:
+            task_type = "classification" if metric in ["ap", "auroc", "f1", "accuracy"] else "regression"
+            
         higher_is_better = metric in ("ap", "auroc")
         best_val  = -float("inf") if higher_is_better else float("inf")
         patience  = 0
@@ -169,7 +175,7 @@ class Trainer:
 
         for epoch in range(1, self.config["epochs"] + 1):
             train_loss = train_fn(train_loader)
-            val_score, _, _  = eval_fn(val_loader, metric)
+            val_score, val_metrics, _, _  = eval_fn(val_loader, metric, task_type)
 
             is_better = (val_score > best_val if higher_is_better
                          else val_score < best_val)
@@ -182,19 +188,22 @@ class Trainer:
                 patience += 1
 
             lr = self.opt.param_groups[0]["lr"]
+            metrics_str = " | ".join(f"{k.upper()}: {v:.4f}" for k, v in val_metrics.items())
             print(f"Epoch {epoch:03d} | Loss: {train_loss:.4f} | "
-                  f"Val {metric.upper()}: {val_score:.4f} | "
-                  f"Best: {best_val:.4f} | LR: {lr:.2e} | "
+                  f"Val [{metrics_str}] | "
+                  f"Best {metric.upper()}: {best_val:.4f} | LR: {lr:.2e} | "
                   f"Pat: {patience}/{max_pat}")
 
             if self._wandb:
                 import wandb
-                wandb.log({
+                log_data = {
                     "epoch": epoch,
                     "train_loss": train_loss,
-                    f"val_{metric}": val_score,
                     "lr": lr,
-                })
+                }
+                for k, v in val_metrics.items():
+                    log_data[f"val_{k}"] = v
+                wandb.log(log_data)
 
             if patience >= max_pat:
                 print(f"Early stopping at epoch {epoch}.")
@@ -205,14 +214,19 @@ class Trainer:
     @torch.no_grad()
     def test(self, test_loader, domain: str, metric: str,
              checkpoint_path: str = "best_model.pt",
-             report_path: str = None, task_type: str = None) -> float:
+             report_path: str = None, task_type: str = None):
         """Load best checkpoint and evaluate on test set."""
+        if task_type is None:
+            task_type = "classification" if metric in ["ap", "auroc", "f1", "accuracy"] else "regression"
+            
         self.model.load_state_dict(torch.load(checkpoint_path,
                                                map_location=self.device))
         eval_fn = (self.evaluate_lrgb if domain == "lrgb"
                    else self.evaluate_relbench)
-        score, preds, labels = eval_fn(test_loader, metric)
-        print(f"Test {metric.upper()}: {score:.4f}")
+        score, all_metrics, preds, labels = eval_fn(test_loader, metric, task_type)
+        
+        metrics_str = " | ".join(f"{k.upper()}: {v:.4f}" for k, v in all_metrics.items())
+        print(f"Test Metrics -> [{metrics_str}]")
         
         if report_path and task_type:
             from train.metrics import generate_eval_report

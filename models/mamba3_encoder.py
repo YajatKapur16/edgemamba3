@@ -195,19 +195,36 @@ class BidirectionalMamba3(nn.Module):
         # Zero-out padding positions before processing
         if padding_mask is not None:
             x = x * padding_mask.unsqueeze(-1).float()
+            
+            # Prepare vectorized fast flip mechanism for dynamic lengths
+            lengths = padding_mask.sum(dim=1).long()  # [B]
+            L = x.size(1)
+            idx = torch.arange(L, device=x.device).unsqueeze(0).expand(x.size(0), -1)  # [B, L]
+            rev_idx = torch.where(idx < lengths.unsqueeze(1), lengths.unsqueeze(1) - 1 - idx, idx)
+            rev_idx = rev_idx.unsqueeze(-1).expand(-1, -1, x.size(-1))
+            
+            def flip_seq(t):
+                return torch.gather(t, 1, rev_idx)
+        else:
+            def flip_seq(t):
+                return t.flip(1)
 
         # Layer-wise bidirectional Mamba-3 with residual connections
         h = x
         for fwd, bwd, norm in zip(self.fwd_layers, self.bwd_layers, self.norms):
-            fwd_out = fwd(h)                        # [B, L, D]
-            bwd_out = bwd(h.flip(1)).flip(1)        # [B, L, D]
+            fwd_out = fwd(h)                               # [B, L, D]
+            bwd_out = flip_seq(bwd(flip_seq(h)))           # [B, L, D]
 
             # Merge directions
             combined = self.out_proj(
                 torch.cat([fwd_out, bwd_out], dim=-1)
-            )                                        # [B, L, D]
+            )                                              # [B, L, D]
 
             # Residual + norm
             h = norm(h + self.dropout(combined))
+            
+            # Prevent padded positions from accumulating noise in successive backward passes
+            if padding_mask is not None:
+                h = h * padding_mask.unsqueeze(-1).float()
 
         return h
