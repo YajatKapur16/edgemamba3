@@ -50,12 +50,18 @@ class EdgeMamba3(nn.Module):
         task_type: str      = "classification",
         dropout: float      = 0.1,
         use_dist_enc: bool  = True,   # graph distance encoding (LRGB only)
+        use_virtual_node: bool = False,
         use_mamba2: bool    = False,
     ):
         super().__init__()
         assert domain in ("lrgb", "relbench"), f"Unknown domain: {domain}"
         self.domain    = domain
         self.d_model   = d_model
+        
+        self.use_virtual_node = use_virtual_node
+        if self.use_virtual_node and domain == "lrgb":
+            self.virtual_token = nn.Parameter(torch.zeros(1, 1, d_model))
+            nn.init.normal_(self.virtual_token, std=0.02)
 
         # ── Module 1: Input Embedding ──────────────────────────────────────
         if domain == "lrgb":
@@ -116,11 +122,22 @@ class EdgeMamba3(nn.Module):
         # Module 2: LTAS → [|E|, D] ordered
         h_seq, perm, _ = self.serializer(h, line_edge_index.to(x_node.device))
 
+        if self.use_virtual_node:
+            h_seq = torch.cat([self.virtual_token.squeeze(0), h_seq], dim=0)
+
         # Graph distances for distance encoding
         if self.encoder.use_dist and dist_matrix is not None:
             dist_matrix = dist_matrix.to(h_seq.device)
             if perm is not None:
                 dist_matrix = dist_matrix[perm][:, perm]
+                
+            if self.use_virtual_node:
+                l = dist_matrix.shape[0]
+                new_dist = torch.zeros((l+1, l+1), device=dist_matrix.device, dtype=torch.float)
+                new_dist[1:, 1:] = dist_matrix
+                new_dist[0, 1:] = 1.0
+                new_dist[1:, 0] = 1.0
+                dist_matrix = new_dist
         else:
             dist_matrix = None
 
@@ -131,7 +148,10 @@ class EdgeMamba3(nn.Module):
         ).squeeze(0)  # [|E|, D]
 
         # Module 4: Pool + predict → [1, num_outputs]
-        h_graph = self.pool(h_enc.unsqueeze(0))  # [1, D]
+        if self.use_virtual_node:
+            h_graph = h_enc[0:1, :] # [1, D]
+        else:
+            h_graph = self.pool(h_enc.unsqueeze(0))  # [1, D]
         return self.head(h_graph)
 
     def _forward_lrgb_batched(self, batch: Batch) -> torch.Tensor:
@@ -171,6 +191,14 @@ class EdgeMamba3(nn.Module):
         h_padded = pad_sequence(h_seqs, batch_first=True)  # [B, max_L, D]
         B, max_L, _ = h_padded.shape
         
+        lengths = torch.tensor([s.shape[0] for s in h_seqs], device=device)
+        
+        if self.use_virtual_node:
+            v_token = self.virtual_token.expand(B, 1, -1)
+            h_padded = torch.cat([v_token, h_padded], dim=1)
+            max_L += 1
+            lengths = lengths + 1
+        
         # ── Bucket max_L to nearest multiple of 64 ────────────────────────
         # Triton compiles a new kernel for every unique sequence length.
         # With shuffle=True, each epoch produces different max_L values,
@@ -182,7 +210,6 @@ class EdgeMamba3(nn.Module):
             h_padded = F.pad(h_padded, (0, 0, 0, bucketed_L - max_L))
         
         # Create padding mask [B, bucketed_L] (True for valid tokens)
-        lengths = torch.tensor([s.shape[0] for s in h_seqs], device=device)
         mask = torch.arange(bucketed_L, device=device).unsqueeze(0) < lengths.unsqueeze(1)
         
         # Distance matrix padding (if used)
@@ -191,7 +218,12 @@ class EdgeMamba3(nn.Module):
             dist_padded = torch.zeros((B, bucketed_L, bucketed_L), device=device, dtype=torch.float)
             for i, mat in enumerate(dist_mats):
                 l = mat.shape[0]
-                dist_padded[i, :l, :l] = mat
+                if self.use_virtual_node:
+                    dist_padded[i, 1:l+1, 1:l+1] = mat
+                    dist_padded[i, 0, 1:l+1] = 1.0
+                    dist_padded[i, 1:l+1, 0] = 1.0
+                else:
+                    dist_padded[i, :l, :l] = mat
         
         # Module 3: Mamba-3 batched execution (fixed bucketed lengths for Triton cache)
         h_enc = self.encoder(
@@ -201,7 +233,10 @@ class EdgeMamba3(nn.Module):
         )  # [B, bucketed_L, D]
         
         # Module 4: Masked Attention Pooling
-        h_graph = self.pool(h_enc, mask=mask)  # [B, D]
+        if self.use_virtual_node:
+            h_graph = h_enc[:, 0, :]  # [B, D]
+        else:
+            h_graph = self.pool(h_enc, mask=mask)  # [B, D]
         
         return self.head(h_graph)  # [B, num_outputs]
 

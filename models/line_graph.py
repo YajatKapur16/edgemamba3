@@ -5,6 +5,9 @@ import torch.nn as nn
 from torch_geometric.data import Data
 from torch_geometric.transforms import LineGraph as PyGLineGraph
 from torch_scatter import scatter_mean
+import numpy as np
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import shortest_path
 
 
 class DualEmbedding(nn.Module):
@@ -96,34 +99,21 @@ def compute_graph_distances(edge_index: torch.Tensor, num_nodes: int,
                              max_dist: int = 10) -> torch.Tensor:
     """
     Compute shortest-path distances between all pairs of nodes.
-    Used for the positional distance encoding in Module 3.
-
-    BFS from each node — O(|V| · (|V| + |E|)).
-    Only feasible for LRGB graphs (avg |V|=307 bonds after L(G)).
+    Uses SciPy's optimized shortest_path on sparse CSR matrix for massive speedup.
 
     Returns: [num_nodes, num_nodes] distance matrix, clamped at max_dist
     """
-    dist = torch.full((num_nodes, num_nodes), max_dist, dtype=torch.uint8)
-    dist.fill_diagonal_(0)
-
-    adj = [[] for _ in range(num_nodes)]
-    src, dst = edge_index
-    for s, d in zip(src.tolist(), dst.tolist()):
-        adj[s].append(d)
-        adj[d].append(s)
-
-    for start in range(num_nodes):
-        visited = {start: 0}
-        queue   = [start]
-        while queue:
-            node  = queue.pop(0)
-            for nbr in adj[node]:
-                if nbr not in visited:
-                    visited[nbr] = visited[node] + 1
-                    dist[start][nbr] = min(visited[nbr], max_dist)
-                    queue.append(nbr)
-
-    return dist
+    if num_nodes == 0:
+        return torch.empty((0, 0), dtype=torch.uint8)
+        
+    src, dst = edge_index.cpu().numpy()
+    weights = np.ones_like(src)
+    adj = csr_matrix((weights, (src, dst)), shape=(num_nodes, num_nodes))
+    
+    dist_mat = shortest_path(csgraph=adj, directed=False, unweighted=True)
+    dist_mat = np.clip(dist_mat, 0, max_dist)
+    
+    return torch.from_numpy(dist_mat).to(torch.uint8)
 
 
 _GLOBAL_CACHE = {}
@@ -141,9 +131,8 @@ def get_cached_line_graph_and_dist(data: Data):
     
     if h not in _GLOBAL_CACHE:
         line_data, orig_edge_index, _, _ = build_line_graph(data)
-        dist_matrix = None
-        if data.num_edges <= 500:
-            dist_matrix = compute_graph_distances(line_data.edge_index, data.num_edges)
+        dist_matrix = compute_graph_distances(line_data.edge_index, data.num_edges)
+
         
         # Cache only the required tensors (CPU)
         _GLOBAL_CACHE[h] = (line_data.edge_index, orig_edge_index, dist_matrix)

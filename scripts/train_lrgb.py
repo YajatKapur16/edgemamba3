@@ -53,6 +53,7 @@ def main(config_path: str):
             num_outputs=cfg["num_outputs"],
             task_type=cfg["task_type"],
             dropout=cfg["dropout"],
+            use_virtual_node=cfg.get("use_virtual_node", False),
         )
 
         save_path = cfg["save_path"].replace(".pt", f"_seed{seed}.pt")
