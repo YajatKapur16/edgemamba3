@@ -1,5 +1,7 @@
 # models/line_graph.py
 
+import hashlib
+
 import torch
 import torch.nn as nn
 from torch_geometric.data import Data
@@ -21,12 +23,23 @@ class DualEmbedding(nn.Module):
     The endpoint term gives the model access to atom context without
     losing the bond's own feature identity.
 
+    Uses OGB's AtomEncoder and BondEncoder for categorical molecular
+    features (chirality, hybridisation, bond type, etc.) instead of
+    nn.Linear on integer-encoded features.
+
     Complexity: O(|E| · D)
     """
     def __init__(self, node_in_dim: int, edge_in_dim: int, d_model: int):
         super().__init__()
-        self.edge_proj = nn.Linear(edge_in_dim, d_model)
-        self.node_proj = nn.Linear(node_in_dim, d_model)
+        try:
+            from ogb.graphproppred.mol_encoder import AtomEncoder, BondEncoder
+            self.edge_proj = BondEncoder(d_model)
+            self.node_proj = AtomEncoder(d_model)
+            self._use_ogb = True
+        except ImportError:
+            self.edge_proj = nn.Linear(edge_in_dim, d_model)
+            self.node_proj = nn.Linear(node_in_dim, d_model)
+            self._use_ogb = False
         self.norm      = nn.LayerNorm(d_model)
 
     def forward(
@@ -38,9 +51,14 @@ class DualEmbedding(nn.Module):
         """Returns [|E|, d_model] — line graph node embeddings."""
         src, dst = edge_index  # [|E|]
 
-        # Edge/node features may be integer-encoded; linear layers need float
-        x_edge = x_edge.float()
-        x_node = x_node.float()
+        if self._use_ogb:
+            # OGB encoders expect long-typed integer features
+            x_edge = x_edge.long()
+            x_node = x_node.long()
+        else:
+            # Linear layers need float
+            x_edge = x_edge.float()
+            x_node = x_node.float()
 
         h_edge      = self.edge_proj(x_edge)                           # [|E|, D]
         h_endpoints = (self.node_proj(x_node[src]) +
@@ -118,22 +136,29 @@ def compute_graph_distances(edge_index: torch.Tensor, num_nodes: int,
 
 _GLOBAL_CACHE = {}
 
+
+def _structural_hash(data: Data) -> str:
+    """Compute a collision-resistant hash from actual tensor content."""
+    h = hashlib.sha1()
+    h.update(data.edge_index.cpu().numpy().tobytes())
+    h.update(data.x.cpu().numpy().tobytes())
+    return h.hexdigest()
+
+
 def get_cached_line_graph_and_dist(data: Data):
     """
     Computes and caches the line graph connectivity and shortest-path BFS distances
     for a given PyG Data object. Drastically speeds up multi-epoch training by avoiding
     repetitive O(|V|^3) Python overhead on the main CPU thread.
     """
-    # Simple fast hash signature for the graph
-    edge_sum = data.edge_index.sum().item() if data.edge_index is not None else 0
-    node_sum = data.x.sum().item() if data.x is not None else 0
-    h = f"{data.num_nodes}_{data.num_edges}_{edge_sum}_{node_sum}"
+    h = _structural_hash(data)
     
     if h not in _GLOBAL_CACHE:
         line_data, orig_edge_index, _, _ = build_line_graph(data)
-        dist_matrix = compute_graph_distances(line_data.edge_index, data.num_edges)
+        dist_matrix = compute_graph_distances(
+            line_data.edge_index, data.num_edges, max_dist=20
+        )
 
-        
         # Cache only the required tensors (CPU)
         _GLOBAL_CACHE[h] = (line_data.edge_index, orig_edge_index, dist_matrix)
         

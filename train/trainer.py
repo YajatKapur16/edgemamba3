@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from tqdm import tqdm
 import numpy as np
 import sys
@@ -50,10 +50,23 @@ class Trainer:
             weight_decay=float(config.get("weight_decay", 1e-5)),
             betas=(0.9, 0.999),
         )
-        self.sched = CosineAnnealingLR(
+        warmup_epochs = int(config.get("warmup_epochs", 10))
+        total_epochs = config["epochs"]
+        warmup_scheduler = LinearLR(
             self.opt,
-            T_max=config["epochs"],
+            start_factor=1e-6 / float(config["lr"]),
+            end_factor=1.0,
+            total_iters=warmup_epochs,
+        )
+        cosine_scheduler = CosineAnnealingLR(
+            self.opt,
+            T_max=total_epochs - warmup_epochs,
             eta_min=float(config.get("min_lr", 1e-6)),
+        )
+        self.sched = SequentialLR(
+            self.opt,
+            schedulers=[warmup_scheduler, cosine_scheduler],
+            milestones=[warmup_epochs],
         )
 
         if config.get("use_wandb", False) and self.rank == 0:

@@ -107,14 +107,18 @@ class RelBenchEventDataset(Dataset):
         valid_timestamps = self.event_timestamps[valid_indices]
         
         # Create mapping from global entity ID to the index in self.entity_ids (0 to n-1)
-        # Using a tensor array for fast lookup. Assumes entity IDs are bounded reasonably.
-        # Alternatively, use a dict or torch searchsorted if entity_ids are large.
+        # Use dict when IDs are large/sparse to avoid allocating a huge tensor.
         max_id = max(self.entity_ids.max().item(), self.event_entity_ids.max().item())
-        global_to_local = torch.full((max_id + 1,), -1, dtype=torch.long)
-        global_to_local[self.entity_ids] = torch.arange(n)
-        
-        # Map valid events to their local entity index
-        local_entity_ids = global_to_local[valid_entity_ids]
+        if max_id > 10_000_000:
+            g2l = {eid.item(): i for i, eid in enumerate(self.entity_ids)}
+            local_entity_ids = torch.tensor(
+                [g2l.get(eid.item(), -1) for eid in valid_entity_ids],
+                dtype=torch.long,
+            )
+        else:
+            global_to_local = torch.full((max_id + 1,), -1, dtype=torch.long)
+            global_to_local[self.entity_ids] = torch.arange(n)
+            local_entity_ids = global_to_local[valid_entity_ids]
         
         # Keep only events belonging to entities in this split
         split_mask = local_entity_ids != -1
@@ -178,22 +182,27 @@ class RelBenchEventDataset(Dataset):
 def collate_relbench(batch):
     """
     Pads sequences to the nearest length multiple of 64 within a batch.
+    Uses pad_sequence (C++ kernel) instead of a Python loop.
     """
+    from torch.nn.utils.rnn import pad_sequence
+    import torch.nn.functional as F
+
     seqs, dts, masks, labels = zip(*batch)
     max_len = max(s.shape[0] for s in seqs)
-    
+
     # Bucket lengths to nearest multiple of 64 to avoid Triton recompilation storms
     bucketed_len = ((max_len + 63) // 64) * 64
 
-    padded_seqs  = torch.zeros(len(seqs), bucketed_len, seqs[0].shape[-1])
-    padded_dts   = torch.zeros(len(seqs), bucketed_len)
-    padded_masks = torch.zeros(len(seqs), bucketed_len, dtype=torch.bool)
+    # pad_sequence pads to the longest in the batch, then F.pad to bucketed length
+    padded_seqs  = pad_sequence(seqs, batch_first=True)   # [B, max_len, D]
+    padded_dts   = pad_sequence(dts, batch_first=True)    # [B, max_len]
+    padded_masks = pad_sequence(masks, batch_first=True)  # [B, max_len]
 
-    for i, (seq, dt, mask) in enumerate(zip(seqs, dts, masks)):
-        L = seq.shape[0]
-        padded_seqs[i, :L]  = seq
-        padded_dts[i, :L]   = dt
-        padded_masks[i, :L] = mask
+    extra = bucketed_len - max_len
+    if extra > 0:
+        padded_seqs  = F.pad(padded_seqs, (0, 0, 0, extra))
+        padded_dts   = F.pad(padded_dts, (0, extra))
+        padded_masks = F.pad(padded_masks, (0, extra))
 
     return padded_seqs, padded_dts, padded_masks, torch.stack(labels)
 
@@ -338,7 +347,7 @@ def _build_loaders_from_splits(splits, meta, batch_size, actual_workers, persist
             sampler=sampler,
             collate_fn=collate_relbench,
             num_workers=actual_workers,
-            pin_memory=True,
+            pin_memory=False,
             drop_last=drop_last,
             persistent_workers=persistent
         )
