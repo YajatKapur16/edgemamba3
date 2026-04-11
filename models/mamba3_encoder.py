@@ -216,8 +216,11 @@ class BidirectionalMamba3(nn.Module):
         for fwd, bwd, norm in zip(self.fwd_layers, self.bwd_layers, self.norms):
             if self.gradient_checkpointing and self.training:
                 from torch.utils.checkpoint import checkpoint
-                fwd_out = checkpoint(fwd, h, use_reentrant=False)
-                bwd_out = flip_seq(checkpoint(bwd, flip_seq(h), use_reentrant=False))
+                # use_reentrant=True required: Mamba3's custom autograd backward
+                # accesses ctx.saved_tensors which conflicts with non-reentrant
+                # pack/unpack hooks (causes CheckpointError on double-unpack).
+                fwd_out = checkpoint(fwd, h, use_reentrant=True)
+                bwd_out = flip_seq(checkpoint(bwd, flip_seq(h), use_reentrant=True))
             else:
                 fwd_out = fwd(h)                               # [B, L, D]
                 bwd_out = flip_seq(bwd(flip_seq(h)))           # [B, L, D]
