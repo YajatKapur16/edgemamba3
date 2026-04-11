@@ -151,10 +151,11 @@ class Trainer:
             if (i + 1) % self.accum_steps == 0:
                 self.scaler.unscale_(self.opt)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+                old_scale = self.scaler.get_scale()
                 self.scaler.step(self.opt)
                 self.scaler.update()
                 self.opt.zero_grad()
-                if self._sched_per_step:
+                if self._sched_per_step and old_scale <= self.scaler.get_scale():
                     self.sched.step()
 
             total_loss += loss.item() * self.accum_steps  # unscale for logging
@@ -163,10 +164,11 @@ class Trainer:
         if (i + 1) % self.accum_steps != 0:
             self.scaler.unscale_(self.opt)
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+            old_scale = self.scaler.get_scale()
             self.scaler.step(self.opt)
             self.scaler.update()
             self.opt.zero_grad()
-            if self._sched_per_step:
+            if self._sched_per_step and old_scale <= self.scaler.get_scale():
                 self.sched.step()
 
         if not self._sched_per_step:
@@ -196,10 +198,11 @@ class Trainer:
             if (i + 1) % self.accum_steps == 0:
                 self.scaler.unscale_(self.opt)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+                old_scale = self.scaler.get_scale()
                 self.scaler.step(self.opt)
                 self.scaler.update()
                 self.opt.zero_grad()
-                if self._sched_per_step:
+                if self._sched_per_step and old_scale <= self.scaler.get_scale():
                     self.sched.step()
 
             total_loss += loss.item() * self.accum_steps
@@ -208,10 +211,11 @@ class Trainer:
         if (i + 1) % self.accum_steps != 0:
             self.scaler.unscale_(self.opt)
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+            old_scale = self.scaler.get_scale()
             self.scaler.step(self.opt)
             self.scaler.update()
             self.opt.zero_grad()
-            if self._sched_per_step:
+            if self._sched_per_step and old_scale <= self.scaler.get_scale():
                 self.sched.step()
 
         if not self._sched_per_step:
