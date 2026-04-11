@@ -122,3 +122,17 @@ def load_lrgb(
     print(f"  Sample avg nodes={sample.num_nodes}, avg edges={sample.num_edges}")
 
     return train_loader, val_loader, test_loader, metadata
+
+
+def compute_pos_weight(dataset) -> torch.Tensor:
+    """
+    Compute pos_weight for BCEWithLogitsLoss from label frequencies.
+    Returns: [num_classes] tensor of (num_neg / num_pos) per class.
+    """
+    labels = torch.stack([d.y for d in dataset], dim=0)  # [N, C]
+    pos_count = labels.sum(dim=0).float().clamp(min=1)
+    neg_count = (labels.shape[0] - pos_count).float().clamp(min=1)
+    pw = neg_count / pos_count
+    # Clamp to avoid extreme weights
+    pw = pw.clamp(max=10.0)
+    return pw

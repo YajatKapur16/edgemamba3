@@ -166,3 +166,15 @@ def get_cached_line_graph_and_dist(data: Data):
     
     # Return matched with dynamic node/edge features
     return l_edge_index, o_edge_index, dist_matrix, data.x, data.edge_attr
+
+
+def warmup_cache(dataset, desc="Pre-caching line graphs"):
+    """
+    Pre-compute and cache all line graphs + distance matrices before training.
+    Eliminates the per-batch CPU stall during the first epoch.
+    """
+    from tqdm import tqdm
+    for i in tqdm(range(len(dataset)), desc=desc, mininterval=2.0):
+        data = dataset[i]
+        get_cached_line_graph_and_dist(data)
+    print(f"  Cached {len(_GLOBAL_CACHE)} unique graphs.")

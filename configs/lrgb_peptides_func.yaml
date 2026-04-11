@@ -10,17 +10,19 @@ d_model: 256
 n_layers: 8
 d_state: 32
 mimo_rank: 4
-dropout: 0.1
+dropout: 0.05
 use_virtual_node: true
-gradient_checkpointing: true
+gradient_checkpointing: false
 
-lr: 0.0005
-weight_decay: 1e-5
+lr: 0.0003
+weight_decay: 1e-4
 min_lr: 1e-6
-batch_size: 32
-accum_steps: 4    # effective batch = 32 * 4 = 128
-epochs: 200
-patience: 30
+warmup_epochs: 5
+batch_size: 64
+accum_steps: 1    # effective batch = 64 (more updates per epoch)
+epochs: 250
+patience: 40
+use_pos_weight: true
 
 use_wandb: false
 save_path: "checkpoints/edgemamba3_peptides_func.pt"

@@ -52,11 +52,11 @@ class Trainer:
             weight_decay=float(config.get("weight_decay", 1e-5)),
             betas=(0.9, 0.999),
         )
-        warmup_epochs = int(config.get("warmup_epochs", 10))
+        warmup_epochs = int(config.get("warmup_epochs", 5))
         total_epochs = config["epochs"]
         warmup_scheduler = LinearLR(
             self.opt,
-            start_factor=1e-6 / float(config["lr"]),
+            start_factor=0.01,
             end_factor=1.0,
             total_iters=warmup_epochs,
         )

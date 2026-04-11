@@ -76,21 +76,33 @@ class TaskHead(nn.Module):
         assert task_type in ("classification", "regression",
                              "binary_classification")
         self.task_type = task_type
+        self._pos_weight = None
 
         self.mlp = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.LayerNorm(d_model),
+            nn.Dropout(dropout),
             nn.Linear(d_model, d_model // 2),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(d_model // 2, num_outputs),
         )
+
+    def set_pos_weight(self, pos_weight: torch.Tensor):
+        """Set class-level positive weights for imbalanced multi-label tasks."""
+        self._pos_weight = pos_weight
 
     def forward(self, h: torch.Tensor) -> torch.Tensor:
         return self.mlp(h)
 
     def loss(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         if self.task_type in ("classification", "binary_classification"):
+            pw = self._pos_weight
+            if pw is not None:
+                pw = pw.to(pred.device)
             return nn.functional.binary_cross_entropy_with_logits(
-                pred, target.float()
+                pred, target.float(), pos_weight=pw
             )
         else:
             return nn.functional.l1_loss(pred, target.float())
