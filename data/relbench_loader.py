@@ -211,7 +211,7 @@ def load_relbench(
     config_key: str,
     batch_size: int = 64,
     max_seq_len: int = 256,
-    num_workers: int = 4,
+    num_workers: int = 8,
     **kwargs
 ):
     """
@@ -241,7 +241,9 @@ def load_relbench(
         meta = cached_data["meta"]
         print(f"  Loaded in {time.time()-t0:.2f}s", flush=True)
         
-        return _build_loaders_from_splits(splits, meta, batch_size, num_workers, True)
+        actual_workers = 0 if os.name == 'nt' else num_workers
+        persistent = actual_workers > 0
+        return _build_loaders_from_splits(splits, meta, batch_size, actual_workers, persistent)
 
     print(f"[RelBench Loader] No cache found. Processing {config_key} from scratch...", flush=True)
     max_seq_len = kwargs.get("max_seq_len", 256) # Extract max_seq_len from kwargs
@@ -338,6 +340,9 @@ def _build_loaders_from_splits(splits, meta, batch_size, actual_workers, persist
     val_sampler   = DistributedSampler(splits["val"], shuffle=False) if is_dist else None
     test_sampler  = DistributedSampler(splits["test"], shuffle=False) if is_dist else None
 
+    use_pin = torch.cuda.is_available()
+    prefetch = 4 if actual_workers > 0 else None
+
     # DataLoader wrapper
     def create_loader(split_data, bs, shuffle, drop_last, sampler):
         return DataLoader(
@@ -347,9 +352,10 @@ def _build_loaders_from_splits(splits, meta, batch_size, actual_workers, persist
             sampler=sampler,
             collate_fn=collate_relbench,
             num_workers=actual_workers,
-            pin_memory=False,
+            pin_memory=use_pin,
             drop_last=drop_last,
-            persistent_workers=persistent
+            persistent_workers=persistent,
+            prefetch_factor=prefetch,
         )
 
     train_loader = create_loader(splits["train"], batch_size, True, True, train_sampler)
