@@ -170,47 +170,56 @@ class EdgeMamba3(nn.Module):
 
         GATConv scoring is batched across all graphs in a single kernel launch
         via PyG's native batching (concatenated graphs with offset edge indices).
+        DualEmbedding is also batched: all node/edge features are concatenated
+        and embedded in a single GPU call, eliminating per-graph kernel launches.
         """
         from models.line_graph import get_cached_line_graph_and_dist
         from torch.nn.utils.rnn import pad_sequence
-        from torch_geometric.data import Batch as PyGBatch
 
-        dist_mats = []
-
-        # Unbatch on CPU to avoid CUDA kernel arch mismatches in PyG extensions
         device = batch.x.device
         graphs = batch.cpu().to_data_list()
 
-        # ── Stage 1: Build embeddings and collect line graph data for batched GATConv ──
-        h_list = []
+        # ── Stage 1: Collect cache data + batch DualEmbedding inputs ──
+        all_x_node = []
+        all_x_edge = []
+        all_orig_ei = []
         line_edge_indices = []
-        node_offset = 0
+        dist_mats = []
+        node_offset_embed = 0   # offset for original edge_index (node count)
+        node_offset_line = 0    # offset for line edge_index (edge count)
         graph_lengths = []
 
         for data in graphs:
             line_edge_index, orig_edge_index, dist_matrix, x_node, x_edge = get_cached_line_graph_and_dist(data)
 
-            # Module 1: Dual embedding per graph
-            h = self.embed(x_node.to(device), x_edge.to(device), orig_edge_index.to(device))
-            h_list.append(h)
+            num_nodes = x_node.shape[0]
+            num_edges = x_edge.shape[0]
 
-            num_line_nodes = h.shape[0]
-            graph_lengths.append(num_line_nodes)
+            all_x_node.append(x_node)
+            all_x_edge.append(x_edge)
+            all_orig_ei.append(orig_edge_index + node_offset_embed)
+            node_offset_embed += num_nodes
 
-            # Offset line graph edge indices for batched GATConv
-            line_edge_indices.append(line_edge_index + node_offset)
-            node_offset += num_line_nodes
+            graph_lengths.append(num_edges)
+            line_edge_indices.append(line_edge_index + node_offset_line)
+            node_offset_line += num_edges
 
             if self.encoder.use_dist and dist_matrix is not None:
-                dist_mats.append(dist_matrix.to(device))
+                dist_mats.append(dist_matrix)
+
+        # ── Stage 1b: Single batched DualEmbedding call ──
+        cat_x_node = torch.cat(all_x_node, dim=0).to(device)
+        cat_x_edge = torch.cat(all_x_edge, dim=0).to(device)
+        cat_orig_ei = torch.cat(all_orig_ei, dim=1).to(device)
+        h_cat = self.embed(cat_x_node, cat_x_edge, cat_orig_ei)  # [total_edges, D]
+        del cat_x_node, cat_x_edge, cat_orig_ei, all_x_node, all_x_edge, all_orig_ei
 
         # ── Stage 2: Batched GATConv scoring (single GPU kernel) ──
-        h_cat = torch.cat(h_list, dim=0)                          # [total_nodes, D]
-        batched_line_ei = torch.cat(line_edge_indices, dim=1).to(device)  # [2, total_edges]
+        batched_line_ei = torch.cat(line_edge_indices, dim=1).to(device)  # [2, total_line_edges]
+        scores_cat = self.serializer.score_gat(h_cat, batched_line_ei).squeeze(-1)  # [total_edges]
+        del line_edge_indices, batched_line_ei
 
-        scores_cat = self.serializer.score_gat(h_cat, batched_line_ei).squeeze(-1)  # [total_nodes]
-
-        # ── Stage 3: Per-graph argsort + reorder (CPU-bound O(L log L)) ──
+        # ── Stage 3: Per-graph argsort + reorder ──
         from models.ltas import differentiable_argsort
         h_seqs = []
         offset = 0
@@ -223,12 +232,12 @@ class EdgeMamba3(nn.Module):
             h_seqs.append(h_i[perm_idx])
 
             if self.encoder.use_dist and i < len(dist_mats):
-                dist_mats_reordered.append(dist_mats[i][perm_idx][:, perm_idx])
+                dist_mats_reordered.append(dist_mats[i][perm_idx][:, perm_idx].to(device))
 
             offset += length
 
         # Free intermediate tensors no longer needed
-        del h_cat, scores_cat, h_list, line_edge_indices, batched_line_ei, dist_mats
+        del h_cat, scores_cat, dist_mats
 
         # Pad sequences to [B, max_L, D]
         h_padded = pad_sequence(h_seqs, batch_first=True)  # [B, max_L, D]

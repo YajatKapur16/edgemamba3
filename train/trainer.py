@@ -37,6 +37,13 @@ class Trainer:
         self.use_amp  = config.get("use_amp", True) and torch.cuda.is_available()
         self.accum_steps = max(1, int(config.get("accum_steps", 1)))
 
+        # CUDA performance flags — free 5-15% speedup on Ampere/Turing GPUs
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.set_float32_matmul_precision("high")
+
         self.is_dist = dist.is_available() and dist.is_initialized()
         self.rank = dist.get_rank() if self.is_dist else 0
 
@@ -347,9 +354,12 @@ class Trainer:
         """Load best checkpoint and evaluate on test set."""
         if task_type is None:
             task_type = "classification" if metric in ["ap", "auroc", "f1", "accuracy"] else "regression"
-            
-        self.model.load_state_dict(torch.load(checkpoint_path,
-                                               map_location=self.device))
+
+        # Checkpoint was saved from model.module (no 'module.' prefix),
+        # so load into the unwrapped model to match keys.
+        raw_model = self.model.module if self.is_dist else self.model
+        raw_model.load_state_dict(torch.load(checkpoint_path,
+                                              map_location=self.device))
         eval_fn = (self.evaluate_lrgb if domain == "lrgb"
                    else self.evaluate_relbench)
         score, all_metrics, preds, labels = eval_fn(test_loader, metric, task_type)

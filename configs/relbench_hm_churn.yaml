@@ -14,10 +14,10 @@ dropout: 0.1
 lr: 0.001
 weight_decay: 1e-5
 min_lr: 1e-6
-batch_size: 1024
+batch_size: 2048
 epochs: 100
 patience: 20
-gradient_checkpointing: true
+gradient_checkpointing: false
 
 use_wandb: false
 save_path: "checkpoints/edgemamba3_hm_churn.pt"
