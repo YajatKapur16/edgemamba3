@@ -117,14 +117,19 @@ def _train_worker(rank, world_size, port, config, domain, seed,
     # Load data (each worker loads independently; DistributedSampler splits it)
     train_loader, val_loader, test_loader, meta = _load_data(config, domain)
 
-    # LRGB: Pre-cache line graphs on rank 0, barrier for others
+    # LRGB: Pre-cache line graphs — ALL ranks must warm up their own process-local cache
     if domain == "lrgb":
         from models.line_graph import warmup_cache
-        if rank == 0 and warmup_done_flag.value == 0:
+        if rank == 0:
             warmup_cache(train_loader.dataset, desc="Pre-caching train line graphs")
             warmup_cache(val_loader.dataset, desc="Pre-caching val line graphs")
             warmup_cache(test_loader.dataset, desc="Pre-caching test line graphs")
-            warmup_done_flag.value = 1
+        dist.barrier()
+        # Rank 1+ caches after rank 0 finishes (avoids duplicate tqdm output)
+        if rank != 0:
+            warmup_cache(train_loader.dataset, desc=f"[rank{rank}] Caching train")
+            warmup_cache(val_loader.dataset, desc=f"[rank{rank}] Caching val")
+            warmup_cache(test_loader.dataset, desc=f"[rank{rank}] Caching test")
         dist.barrier()
 
     # Build model

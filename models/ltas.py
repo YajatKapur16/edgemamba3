@@ -83,6 +83,8 @@ class LTAS(nn.Module):
             scores:    [L]    — raw scores (for visualisation / ablation)
         """
         scores = self.score_gat(h, edge_index).squeeze(-1)  # [L]
-        perm   = differentiable_argsort(scores, descending=True)
-        perm_idx = perm.long()                   # integer indices for gathering
-        return h[perm_idx], perm_idx, scores
+        perm_idx = scores.argsort(descending=True)            # integer indices
+        h_ordered = h[perm_idx]
+        # Zero-valued STE anchor: forward value unchanged, backward flows to GATConv
+        h_ordered = h_ordered + (scores.sum() - scores.sum().detach()).unsqueeze(0)
+        return h_ordered, perm_idx, scores
