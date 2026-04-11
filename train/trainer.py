@@ -53,6 +53,9 @@ class Trainer:
             dev_id = [int(re.findall(r'\d+', str(device))[0])] if 'cuda:' in str(device) else None
             self.model = DDP(self.model, device_ids=dev_id)
 
+        # Unwrapped model reference for accessing custom methods (.loss(), etc.)
+        self._raw_model = self.model.module if self.is_dist else self.model
+
         self.opt = AdamW(
             model.parameters(),
             lr=float(config["lr"]),
@@ -140,7 +143,7 @@ class Trainer:
 
             with torch.amp.autocast("cuda", enabled=self.use_amp):
                 pred  = self.model(batch)
-                loss  = self.model.loss(pred, batch.y.to(self.device))
+                loss  = self._raw_model.loss(pred, batch.y.to(self.device))
                 loss  = loss / self.accum_steps  # scale for accumulation
 
             self.scaler.scale(loss).backward()
@@ -185,7 +188,7 @@ class Trainer:
 
             with torch.amp.autocast("cuda", enabled=self.use_amp):
                 pred  = self.model(seq, dt, mask)
-                loss  = self.model.loss(pred.squeeze(-1), labels)
+                loss  = self._raw_model.loss(pred.squeeze(-1), labels)
                 loss  = loss / self.accum_steps
 
             self.scaler.scale(loss).backward()
