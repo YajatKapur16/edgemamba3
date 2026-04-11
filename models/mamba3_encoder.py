@@ -124,6 +124,7 @@ class BidirectionalMamba3(nn.Module):
         mimo_rank: int  = 4,
         n_layers: int   = 4,
         dropout: float  = 0.1,
+        drop_path: float = 0.0,
         use_time_enc: bool = False,
         use_dist_enc: bool = False,
         expand: int     = 2,
@@ -166,6 +167,9 @@ class BidirectionalMamba3(nn.Module):
         self.norms = nn.ModuleList(
             [nn.RMSNorm(d_model) for _ in range(n_layers)]
         )
+
+        # Stochastic depth: linearly increasing drop probability per layer
+        self.drop_path_rates = [drop_path * i / max(n_layers - 1, 1) for i in range(n_layers)]
 
         # Projection after concatenating fwd + bwd
         self.out_proj = nn.Linear(2 * d_model, d_model, bias=False)
@@ -213,7 +217,7 @@ class BidirectionalMamba3(nn.Module):
 
         # Layer-wise bidirectional Mamba-3 with residual connections
         h = x
-        for fwd, bwd, norm in zip(self.fwd_layers, self.bwd_layers, self.norms):
+        for layer_idx, (fwd, bwd, norm) in enumerate(zip(self.fwd_layers, self.bwd_layers, self.norms)):
             if self.gradient_checkpointing and self.training:
                 from torch.utils.checkpoint import checkpoint
                 # use_reentrant=True required: Mamba3's custom autograd backward
@@ -229,9 +233,18 @@ class BidirectionalMamba3(nn.Module):
             combined = self.out_proj(
                 torch.cat([fwd_out, bwd_out], dim=-1)
             )                                              # [B, L, D]
+            combined = self.dropout(combined)
+
+            # Stochastic depth: randomly skip residual during training
+            dp_rate = self.drop_path_rates[layer_idx]
+            if self.training and dp_rate > 0.0:
+                keep_prob = 1.0 - dp_rate
+                shape = (combined.shape[0],) + (1,) * (combined.ndim - 1)
+                mask = torch.bernoulli(torch.full(shape, keep_prob, device=combined.device))
+                combined = combined * mask / keep_prob  # scale to preserve expectation
 
             # Residual + norm
-            h = norm(h + self.dropout(combined))
+            h = norm(h + combined)
             
             # Prevent padded positions from accumulating noise in successive backward passes
             if padding_mask is not None:

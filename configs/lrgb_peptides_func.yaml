@@ -11,17 +11,20 @@ n_layers: 8
 d_state: 32
 mimo_rank: 4
 dropout: 0.05
+drop_path: 0.1
 use_virtual_node: true
 gradient_checkpointing: false
 
-lr: 0.0003
+lr: 0.001
 weight_decay: 1e-4
-min_lr: 1e-6
-warmup_epochs: 5
+beta2: 0.95
+grad_clip: 5.0
+scheduler: "onecycle"
+pct_start: 0.1
 batch_size: 64
 accum_steps: 1    # effective batch = 64 (more updates per epoch)
-epochs: 250
-patience: 40
+epochs: 150
+patience: 30
 use_pos_weight: true
 
 use_wandb: false

@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR, OneCycleLR
 from tqdm import tqdm
 import numpy as np
 import sys
@@ -50,26 +50,13 @@ class Trainer:
             model.parameters(),
             lr=float(config["lr"]),
             weight_decay=float(config.get("weight_decay", 1e-5)),
-            betas=(0.9, 0.999),
+            betas=(0.9, float(config.get("beta2", 0.95))),
         )
-        warmup_epochs = int(config.get("warmup_epochs", 5))
-        total_epochs = config["epochs"]
-        warmup_scheduler = LinearLR(
-            self.opt,
-            start_factor=0.01,
-            end_factor=1.0,
-            total_iters=warmup_epochs,
-        )
-        cosine_scheduler = CosineAnnealingLR(
-            self.opt,
-            T_max=total_epochs - warmup_epochs,
-            eta_min=float(config.get("min_lr", 1e-6)),
-        )
-        self.sched = SequentialLR(
-            self.opt,
-            schedulers=[warmup_scheduler, cosine_scheduler],
-            milestones=[warmup_epochs],
-        )
+        self.grad_clip = float(config.get("grad_clip", 5.0))
+
+        # Scheduler is built lazily in _build_scheduler() once we know loader length
+        self.sched = None
+        self._sched_per_step = False
 
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
 
@@ -83,6 +70,42 @@ class Trainer:
                 self._wandb = False
         else:
             self._wandb = False
+
+    def _build_scheduler(self, steps_per_epoch: int):
+        """Build LR scheduler once we know the actual steps_per_epoch."""
+        total_epochs = self.config["epochs"]
+
+        if self.config.get("scheduler", "onecycle") == "onecycle":
+            self.sched = OneCycleLR(
+                self.opt,
+                max_lr=float(self.config["lr"]),
+                epochs=total_epochs,
+                steps_per_epoch=steps_per_epoch,
+                pct_start=float(self.config.get("pct_start", 0.1)),
+                anneal_strategy="cos",
+                div_factor=10.0,        # initial_lr = max_lr / 10
+                final_div_factor=100.0,  # final_lr = initial_lr / 100
+            )
+            self._sched_per_step = True
+        else:
+            warmup_epochs = int(self.config.get("warmup_epochs", 5))
+            warmup_scheduler = LinearLR(
+                self.opt,
+                start_factor=0.01,
+                end_factor=1.0,
+                total_iters=warmup_epochs,
+            )
+            cosine_scheduler = CosineAnnealingLR(
+                self.opt,
+                T_max=total_epochs - warmup_epochs,
+                eta_min=float(self.config.get("min_lr", 1e-6)),
+            )
+            self.sched = SequentialLR(
+                self.opt,
+                schedulers=[warmup_scheduler, cosine_scheduler],
+                milestones=[warmup_epochs],
+            )
+            self._sched_per_step = False
 
     def _sync_metrics(self, preds: torch.Tensor, labels: torch.Tensor):
         if not self.is_dist:
@@ -117,22 +140,27 @@ class Trainer:
 
             if (i + 1) % self.accum_steps == 0:
                 self.scaler.unscale_(self.opt)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
                 self.scaler.step(self.opt)
                 self.scaler.update()
                 self.opt.zero_grad()
+                if self._sched_per_step:
+                    self.sched.step()
 
             total_loss += loss.item() * self.accum_steps  # unscale for logging
 
         # Flush remaining gradients if last window was incomplete
         if (i + 1) % self.accum_steps != 0:
             self.scaler.unscale_(self.opt)
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
             self.scaler.step(self.opt)
             self.scaler.update()
             self.opt.zero_grad()
+            if self._sched_per_step:
+                self.sched.step()
 
-        self.sched.step()
+        if not self._sched_per_step:
+            self.sched.step()
         return total_loss / len(loader)
 
     # ── RelBench Training Step ─────────────────────────────────────────────────
@@ -157,22 +185,27 @@ class Trainer:
 
             if (i + 1) % self.accum_steps == 0:
                 self.scaler.unscale_(self.opt)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
                 self.scaler.step(self.opt)
                 self.scaler.update()
                 self.opt.zero_grad()
+                if self._sched_per_step:
+                    self.sched.step()
 
             total_loss += loss.item() * self.accum_steps
 
         # Flush remaining gradients if last window was incomplete
         if (i + 1) % self.accum_steps != 0:
             self.scaler.unscale_(self.opt)
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
             self.scaler.step(self.opt)
             self.scaler.update()
             self.opt.zero_grad()
+            if self._sched_per_step:
+                self.sched.step()
 
-        self.sched.step()
+        if not self._sched_per_step:
+            self.sched.step()
         return total_loss / len(loader)
 
     # ── Evaluation ─────────────────────────────────────────────────────────────
@@ -254,6 +287,12 @@ class Trainer:
                     else self.train_epoch_relbench)
         eval_fn  = (self.evaluate_lrgb if domain == "lrgb"
                     else self.evaluate_relbench)
+
+        # Build scheduler now that we know the loader length
+        limit = self.config.get("limit_batches")
+        steps_per_epoch = min(len(train_loader), limit) if limit else len(train_loader)
+        steps_per_epoch = max(1, steps_per_epoch // self.accum_steps)
+        self._build_scheduler(steps_per_epoch)
 
         for epoch in range(1, self.config["epochs"] + 1):
             if self.is_dist and hasattr(train_loader, "sampler") and hasattr(train_loader.sampler, "set_epoch"):

@@ -49,6 +49,7 @@ class EdgeMamba3(nn.Module):
         num_outputs: int    = 1,
         task_type: str      = "classification",
         dropout: float      = 0.1,
+        drop_path: float    = 0.0,
         use_dist_enc: bool  = True,   # graph distance encoding (LRGB only)
         use_virtual_node: bool = False,
         use_mamba2: bool    = False,
@@ -90,6 +91,7 @@ class EdgeMamba3(nn.Module):
             mimo_rank=mimo_rank,
             n_layers=n_layers,
             dropout=dropout,
+            drop_path=drop_path,
             use_time_enc=(domain == "relbench"),
             use_dist_enc=(domain == "lrgb" and use_dist_enc),
             use_mamba2=use_mamba2,
