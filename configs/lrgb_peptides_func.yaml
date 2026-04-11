@@ -6,8 +6,8 @@ num_outputs: 10
 node_in_dim: 9     # Peptides atom feature dim
 edge_in_dim: 3     # Peptides bond feature dim
 
-d_model: 256
-n_layers: 8
+d_model: 128
+n_layers: 4
 d_state: 32
 mimo_rank: 4
 dropout: 0.05
@@ -21,8 +21,8 @@ beta2: 0.95
 grad_clip: 5.0
 scheduler: "onecycle"
 pct_start: 0.1
-batch_size: 64
-accum_steps: 1    # effective batch = 64 (more updates per epoch)
+batch_size: 256
+accum_steps: 1    # effective batch = 256 (more updates per epoch)
 epochs: 150
 patience: 30
 use_pos_weight: true

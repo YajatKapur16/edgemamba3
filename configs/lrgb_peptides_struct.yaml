@@ -7,7 +7,7 @@ node_in_dim: 9
 edge_in_dim: 3
 
 d_model: 128
-n_layers: 6
+n_layers: 4
 d_state: 32
 mimo_rank: 4
 dropout: 0.1
@@ -15,7 +15,7 @@ dropout: 0.1
 lr: 0.0005
 weight_decay: 1e-5
 min_lr: 1e-6
-batch_size: 32
+batch_size: 256
 accum_steps: 4    # effective batch = 32 * 4 = 128
 epochs: 200
 patience: 30

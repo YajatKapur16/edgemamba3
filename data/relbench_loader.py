@@ -140,7 +140,26 @@ class RelBenchEventDataset(Dataset):
         # Compute lengths and start indices for each local entity
         self.counts = torch.bincount(local_entity_ids, minlength=n)
         self.starts = torch.cat([torch.tensor([0]), self.counts.cumsum(0)[:-1]])
-        self.valid_indices = valid_indices
+
+        # Pre-gather features and timestamps into contiguous entity-sorted storage.
+        # This converts __getitem__ from expensive fancy-indexing into the full
+        # event_features tensor (~31M rows for H&M) into cheap contiguous slices.
+        print(f"    Pre-gathering {len(valid_indices)} events into contiguous storage...", flush=True)
+        self.sorted_features = self.event_features[valid_indices]     # [N_valid, D]
+        self.sorted_timestamps = self.event_timestamps[valid_indices] # [N_valid]
+
+        # Pre-compute delta_t for all events (gaps between consecutive same-entity events)
+        self.sorted_dt = torch.zeros(len(valid_indices))
+        # Within each entity group, dt[i] = ts[i] - ts[i-1], dt[0] = 0
+        # Since events are grouped by entity with preserved timestamp order,
+        # we just need to zero out the first event of each entity.
+        if len(valid_indices) > 0:
+            self.sorted_dt[1:] = (self.sorted_timestamps[1:] - self.sorted_timestamps[:-1]).float().clamp(min=0)
+            # Zero out the first event of each entity (cross-entity delta is meaningless)
+            self.sorted_dt[self.starts[self.counts > 0]] = 0.0
+
+        # Drop references to the full event tensors — they're no longer needed
+        del self.event_features, self.event_timestamps, self.event_entity_ids
         
         print(f"      done in {_time.time()-t0:.2f}s", flush=True)
 
@@ -152,29 +171,22 @@ class RelBenchEventDataset(Dataset):
         count  = self.counts[idx].item()
 
         if count == 0:
-            # No events before seed_time — return zero sequence
             seq   = torch.zeros(self.min_seq_len, self.event_feat_dim)
             dt    = torch.zeros(self.min_seq_len)
             mask  = torch.zeros(self.min_seq_len, dtype=torch.bool)
             return seq, dt, mask, label
         
         start = self.starts[idx].item()
-        ev_idx = self.valid_indices[start : start + count]
 
         # Truncate to max_seq_len (keep most recent events)
-        if len(ev_idx) > self.max_seq_len:
-            ev_idx = ev_idx[-self.max_seq_len:]
+        if count > self.max_seq_len:
+            start = start + count - self.max_seq_len
+            count = self.max_seq_len
 
-        seq = self.event_features[ev_idx]  # [L, D]
-        ts  = self.event_timestamps[ev_idx]
-
-        # Delta-t: time gaps between consecutive events
-        dt = torch.zeros(len(ts))
-        if len(ts) > 1:
-            dt[1:] = (ts[1:] - ts[:-1]).float().clamp(min=0)
-
-        # Padding mask (True = valid, False = padding)
-        mask = torch.ones(len(seq), dtype=torch.bool)
+        # Contiguous slices — no fancy indexing, no copies
+        seq  = self.sorted_features[start : start + count]   # [L, D]
+        dt   = self.sorted_dt[start : start + count]         # [L]
+        mask = torch.ones(count, dtype=torch.bool)
 
         return seq, dt, mask, label
 
@@ -240,6 +252,12 @@ def load_relbench(
         splits = cached_data["splits"]
         meta = cached_data["meta"]
         print(f"  Loaded in {time.time()-t0:.2f}s", flush=True)
+
+        # Rebuild index if cache was created before contiguous pre-gather optimization
+        for split_ds in splits.values():
+            if not hasattr(split_ds, 'sorted_features'):
+                print(f"  Rebuilding index for {len(split_ds)} entities (cache upgrade)...", flush=True)
+                split_ds._build_index()
         
         actual_workers = 0 if os.name == 'nt' else num_workers
         persistent = actual_workers > 0
