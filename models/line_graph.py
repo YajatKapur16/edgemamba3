@@ -31,15 +31,8 @@ class DualEmbedding(nn.Module):
     """
     def __init__(self, node_in_dim: int, edge_in_dim: int, d_model: int):
         super().__init__()
-        try:
-            from ogb.graphproppred.mol_encoder import AtomEncoder, BondEncoder
-            self.edge_proj = BondEncoder(d_model)
-            self.node_proj = AtomEncoder(d_model)
-            self._use_ogb = True
-        except ImportError:
-            self.edge_proj = nn.Linear(edge_in_dim, d_model)
-            self.node_proj = nn.Linear(node_in_dim, d_model)
-            self._use_ogb = False
+        self.edge_proj = nn.Linear(edge_in_dim, d_model)
+        self.node_proj = nn.Linear(node_in_dim, d_model)
         self.norm      = nn.LayerNorm(d_model)
 
     def forward(
@@ -51,14 +44,9 @@ class DualEmbedding(nn.Module):
         """Returns [|E|, d_model] — line graph node embeddings."""
         src, dst = edge_index  # [|E|]
 
-        if self._use_ogb:
-            # OGB encoders expect long-typed integer features
-            x_edge = x_edge.long()
-            x_node = x_node.long()
-        else:
-            # Linear layers need float
-            x_edge = x_edge.float()
-            x_node = x_node.float()
+        # Edge/node features may be integer-encoded; linear layers need float
+        x_edge = x_edge.float()
+        x_node = x_node.float()
 
         h_edge      = self.edge_proj(x_edge)                           # [|E|, D]
         h_endpoints = (self.node_proj(x_node[src]) +

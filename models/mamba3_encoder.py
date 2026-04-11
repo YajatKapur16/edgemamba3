@@ -171,10 +171,8 @@ class BidirectionalMamba3(nn.Module):
         # Stochastic depth: linearly increasing drop probability per layer
         self.drop_path_rates = [drop_path * i / max(n_layers - 1, 1) for i in range(n_layers)]
 
-        # Per-layer projection after concatenating fwd + bwd
-        self.out_projs = nn.ModuleList(
-            [nn.Linear(2 * d_model, d_model, bias=False) for _ in range(n_layers)]
-        )
+        # Projection after concatenating fwd + bwd
+        self.out_proj = nn.Linear(2 * d_model, d_model, bias=False)
         self.dropout    = nn.Dropout(dropout)
 
         # Optional encodings
@@ -219,7 +217,7 @@ class BidirectionalMamba3(nn.Module):
 
         # Layer-wise bidirectional Mamba-3 with residual connections
         h = x
-        for layer_idx, (fwd, bwd, norm, out_proj) in enumerate(zip(self.fwd_layers, self.bwd_layers, self.norms, self.out_projs)):
+        for layer_idx, (fwd, bwd, norm) in enumerate(zip(self.fwd_layers, self.bwd_layers, self.norms)):
             if self.gradient_checkpointing and self.training:
                 from torch.utils.checkpoint import checkpoint
                 # use_reentrant=True required: Mamba3's custom autograd backward
@@ -232,10 +230,9 @@ class BidirectionalMamba3(nn.Module):
                 bwd_out = flip_seq(bwd(flip_seq(h)))           # [B, L, D]
 
             # Merge directions
-            combined = out_proj(
+            combined = self.out_proj(
                 torch.cat([fwd_out, bwd_out], dim=-1)
             )                                              # [B, L, D]
-            combined = self.dropout(combined)
 
             # Stochastic depth: randomly skip residual during training
             dp_rate = self.drop_path_rates[layer_idx]
@@ -246,7 +243,7 @@ class BidirectionalMamba3(nn.Module):
                 combined = combined * mask / keep_prob  # scale to preserve expectation
 
             # Residual + norm
-            h = norm(h + combined)
+            h = norm(h + self.dropout(combined))
             
             # Prevent padded positions from accumulating noise in successive backward passes
             if padding_mask is not None:

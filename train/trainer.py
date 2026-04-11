@@ -85,7 +85,7 @@ class Trainer:
         """Build LR scheduler once we know the actual steps_per_epoch."""
         total_epochs = self.config["epochs"]
 
-        if self.config.get("scheduler", "onecycle") == "onecycle":
+        if self.config.get("scheduler", "warmup_cosine") == "onecycle":
             self.sched = OneCycleLR(
                 self.opt,
                 max_lr=float(self.config["lr"]),
