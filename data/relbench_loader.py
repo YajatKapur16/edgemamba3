@@ -223,7 +223,7 @@ def load_relbench(
     config_key: str,
     batch_size: int = 64,
     max_seq_len: int = 256,
-    num_workers: int = 8,
+    num_workers: int = None,
     **kwargs
 ):
     """
@@ -233,6 +233,9 @@ def load_relbench(
         train_loader, val_loader, test_loader, meta_dict
     """
     
+    if num_workers is None:
+        num_workers = min(4, os.cpu_count() or 1)
+
     if config_key not in RELBENCH_CONFIGS:
         raise ValueError(f"Unknown config: {config_key}. Choose from {list(RELBENCH_CONFIGS.keys())}")
         

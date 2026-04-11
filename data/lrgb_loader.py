@@ -47,8 +47,10 @@ def load_lrgb(
     dataset_name: str,
     root: str = None,
     batch_size: int = 32,
-    num_workers: int = 4,
+    num_workers: int = None,
 ):
+    if num_workers is None:
+        num_workers = min(4, os.cpu_count() or 1)
     if root is None:
         root = os.environ.get("EDGEMAMBA_DATA_CACHE", "./data/cache/lrgb")
     """
