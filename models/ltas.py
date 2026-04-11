@@ -5,61 +5,28 @@ import torch.nn as nn
 from torch_geometric.nn import GATConv
 
 
-class _StraightThroughArgsort(torch.autograd.Function):
-    """
-    Differentiable argsort via straight-through estimator.
-
-    Forward:  returns discrete argsort indices as float, with a
-              zero-valued term that keeps the tensor connected to
-              the computation graph for gradient flow.
-    Backward: passes gradients through as if the op were identity.
-
-    This allows gradients to flow back to the GATConv scoring
-    network even though sorting is not differentiable.
-
-    Why this works in practice:
-    The scoring network learns to rank nodes such that topology-related
-    ones appear early in the sequence. The gradient signal comes from
-    the downstream Mamba-3 loss, propagated through the STE.
-    """
-    @staticmethod
-    def forward(ctx, scores: torch.Tensor, descending: bool):
-        perm = scores.argsort(descending=descending)
-        ctx.save_for_backward(scores)
-        return perm
-
-    @staticmethod
-    def backward(ctx, grad_perm: torch.Tensor):
-        # Pass gradient through unchanged (straight-through)
-        return grad_perm.float(), None
-
-
-def differentiable_argsort(scores: torch.Tensor,
-                            descending: bool = True) -> torch.Tensor:
-    perm = _StraightThroughArgsort.apply(scores, descending)
-    # Add zero-valued term that carries gradient connection to scores.
-    # Forward value is exactly perm.float(), but autograd sees scores.
-    return perm.float() + (scores - scores.detach())
-
-
 class LTAS(nn.Module):
     """
     Linear Topology-Aware Serialization.
 
     Replaces Gumbel-Sinkhorn O(L² × K) and attention ranking O(L²)
-    with a single GATConv layer + differentiable argsort.
+    with a single GATConv layer + argsort.
 
     Complexity: O(|E_L|) for scoring + O(L log L) for sorting
                 = O(L log L) total for sparse line graphs
 
     Architecture:
-        scores = GATConv(d_model → 1)(h, edge_index_L)  # [L]
-        perm   = argsort(scores, descending=True)         # [L]
-        h_seq  = h[perm]                                  # [L, D]
+        scores = GATConv(d_model → 1)(h, edge_index_L)        # [L]
+        h      = h + score_proj(scores)                        # [L, D]
+        perm   = argsort(scores, descending=True)              # [L]
+        h_seq  = h[perm]                                       # [L, D]
 
-    The GATConv gives topology-awareness: each node's score
-    depends on its neighbourhood in L(G), encoding local bond
-    environment into the ordering decision.
+    GATConv receives gradients through the score_proj additive path:
+        loss → Mamba encoder → h[perm] → (h + score_proj(scores)) → GATConv
+
+    The score_proj (Linear 1→D, no bias) maps scalar scores into the
+    feature space with learned, bounded weights. This replaces the
+    broken STE approach that added raw unbounded scores to embeddings.
     """
     def __init__(self, d_model: int):
         super().__init__()
@@ -70,6 +37,9 @@ class LTAS(nn.Module):
             heads=1,
             add_self_loops=True,
         )
+        # Project scalar score → d_model for differentiable gradient path.
+        # bias=False so zero scores contribute nothing at init.
+        self.score_proj = nn.Linear(1, d_model, bias=False)
 
     def forward(
         self,
@@ -83,8 +53,14 @@ class LTAS(nn.Module):
             scores:    [L]    — raw scores (for visualisation / ablation)
         """
         scores = self.score_gat(h, edge_index).squeeze(-1)  # [L]
-        perm_idx = scores.argsort(descending=True)            # integer indices
+
+        # Inject score signal into features BEFORE sorting.
+        # This is differentiable: GATConv gets gradients through score_proj.
+        score_enc = self.score_proj(scores.unsqueeze(-1))    # [L, D]
+        h = h + score_enc
+
+        # Non-differentiable argsort for ordering
+        perm_idx = scores.argsort(descending=True)
         h_ordered = h[perm_idx]
-        # Zero-valued STE anchor: forward value unchanged, backward flows to GATConv
-        h_ordered = h_ordered + (scores.sum() - scores.sum().detach()).unsqueeze(0)
+
         return h_ordered, perm_idx, scores

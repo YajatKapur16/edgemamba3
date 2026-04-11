@@ -219,18 +219,19 @@ class EdgeMamba3(nn.Module):
         scores_cat = self.serializer.score_gat(h_cat, batched_line_ei).squeeze(-1)  # [total_edges]
         del line_edge_indices, batched_line_ei
 
+        # Inject score signal into features BEFORE sorting (differentiable path for GATConv)
+        score_enc = self.serializer.score_proj(scores_cat.unsqueeze(-1))  # [total_edges, D]
+        h_cat = h_cat + score_enc
+
         # ── Stage 3: Per-graph argsort + reorder ──
         h_seqs = []
         offset = 0
         dist_mats_reordered = []
-        score_anchors = []   # collect score terms to maintain gradient path
         for i, length in enumerate(graph_lengths):
             scores_i = scores_cat[offset:offset + length]
             h_i = h_cat[offset:offset + length]
             perm_idx = scores_i.argsort(descending=True)  # integer indices
             h_seqs.append(h_i[perm_idx])
-            # Accumulate a zero-valued term connected to scores for STE gradient
-            score_anchors.append(scores_i.sum() - scores_i.sum().detach())
 
             if self.encoder.use_dist and i < len(dist_mats):
                 perm_cpu = perm_idx.cpu()
@@ -243,10 +244,6 @@ class EdgeMamba3(nn.Module):
 
         # Pad sequences to [B, max_L, D]
         h_padded = pad_sequence(h_seqs, batch_first=True)  # [B, max_L, D]
-        
-        # Add zero-valued score anchor so gradients flow back to GATConv via STE
-        if score_anchors:
-            h_padded = h_padded + sum(score_anchors).unsqueeze(0).unsqueeze(0)
         B, max_L, _ = h_padded.shape
         
         lengths = torch.tensor([s.shape[0] for s in h_seqs], device=device)

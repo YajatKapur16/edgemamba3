@@ -136,5 +136,5 @@ def compute_pos_weight(dataset) -> torch.Tensor:
     neg_count = (labels.shape[0] - pos_count).float().clamp(min=1)
     pw = neg_count / pos_count
     # Clamp to avoid extreme weights
-    pw = pw.clamp(max=10.0)
+    pw = pw.clamp(max=5.0)
     return pw

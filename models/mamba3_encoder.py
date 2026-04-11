@@ -171,8 +171,10 @@ class BidirectionalMamba3(nn.Module):
         # Stochastic depth: linearly increasing drop probability per layer
         self.drop_path_rates = [drop_path * i / max(n_layers - 1, 1) for i in range(n_layers)]
 
-        # Projection after concatenating fwd + bwd
-        self.out_proj = nn.Linear(2 * d_model, d_model, bias=False)
+        # Per-layer projection after concatenating fwd + bwd
+        self.out_projs = nn.ModuleList(
+            [nn.Linear(2 * d_model, d_model, bias=False) for _ in range(n_layers)]
+        )
         self.dropout    = nn.Dropout(dropout)
 
         # Optional encodings
@@ -217,7 +219,7 @@ class BidirectionalMamba3(nn.Module):
 
         # Layer-wise bidirectional Mamba-3 with residual connections
         h = x
-        for layer_idx, (fwd, bwd, norm) in enumerate(zip(self.fwd_layers, self.bwd_layers, self.norms)):
+        for layer_idx, (fwd, bwd, norm, out_proj) in enumerate(zip(self.fwd_layers, self.bwd_layers, self.norms, self.out_projs)):
             if self.gradient_checkpointing and self.training:
                 from torch.utils.checkpoint import checkpoint
                 # use_reentrant=True required: Mamba3's custom autograd backward
@@ -230,7 +232,7 @@ class BidirectionalMamba3(nn.Module):
                 bwd_out = flip_seq(bwd(flip_seq(h)))           # [B, L, D]
 
             # Merge directions
-            combined = self.out_proj(
+            combined = out_proj(
                 torch.cat([fwd_out, bwd_out], dim=-1)
             )                                              # [B, L, D]
             combined = self.dropout(combined)
