@@ -232,7 +232,8 @@ class EdgeMamba3(nn.Module):
             h_seqs.append(h_i[perm_idx])
 
             if self.encoder.use_dist and i < len(dist_mats):
-                dist_mats_reordered.append(dist_mats[i][perm_idx][:, perm_idx].to(device))
+                perm_cpu = perm_idx.cpu()
+                dist_mats_reordered.append(dist_mats[i][perm_cpu][:, perm_cpu].to(device))
 
             offset += length
 
