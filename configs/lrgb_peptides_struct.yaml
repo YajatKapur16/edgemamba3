@@ -7,7 +7,7 @@ node_in_dim: 9
 edge_in_dim: 3
 
 d_model: 128
-n_layers: 4
+n_layers: 6
 d_state: 32
 mimo_rank: 4
 dropout: 0.1

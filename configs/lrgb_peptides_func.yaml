@@ -7,7 +7,7 @@ node_in_dim: 9     # Peptides atom feature dim
 edge_in_dim: 3     # Peptides bond feature dim
 
 d_model: 128
-n_layers: 4
+n_layers: 6
 d_state: 32
 mimo_rank: 4
 dropout: 0.05
