@@ -54,6 +54,7 @@ def main(config_path: str):
             num_outputs=cfg["num_outputs"],
             task_type=cfg["task_type"],
             dropout=cfg["dropout"],
+            gradient_checkpointing=cfg.get("gradient_checkpointing", False),
         )
 
         save_path = cfg["save_path"].replace(".pt", f"_seed{seed}.pt")

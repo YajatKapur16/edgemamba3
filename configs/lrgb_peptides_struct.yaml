@@ -15,9 +15,12 @@ dropout: 0.1
 lr: 0.0005
 weight_decay: 1e-5
 min_lr: 1e-6
-batch_size: 128
+batch_size: 32
+accum_steps: 4    # effective batch = 32 * 4 = 128
 epochs: 200
 patience: 30
+
+gradient_checkpointing: true
 
 use_wandb: false
 save_path: "checkpoints/edgemamba3_peptides_struct.pt"

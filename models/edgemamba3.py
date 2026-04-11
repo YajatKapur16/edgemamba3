@@ -52,6 +52,7 @@ class EdgeMamba3(nn.Module):
         use_dist_enc: bool  = True,   # graph distance encoding (LRGB only)
         use_virtual_node: bool = False,
         use_mamba2: bool    = False,
+        gradient_checkpointing: bool = False,
     ):
         super().__init__()
         assert domain in ("lrgb", "relbench"), f"Unknown domain: {domain}"
@@ -92,6 +93,7 @@ class EdgeMamba3(nn.Module):
             use_time_enc=(domain == "relbench"),
             use_dist_enc=(domain == "lrgb" and use_dist_enc),
             use_mamba2=use_mamba2,
+            gradient_checkpointing=gradient_checkpointing,
         )
 
         # ── Module 4: Readout + Task Head ──────────────────────────────────
@@ -223,6 +225,9 @@ class EdgeMamba3(nn.Module):
 
             offset += length
 
+        # Free intermediate tensors no longer needed
+        del h_cat, scores_cat, h_list, line_edge_indices, batched_line_ei, dist_mats
+
         # Pad sequences to [B, max_L, D]
         h_padded = pad_sequence(h_seqs, batch_first=True)  # [B, max_L, D]
         B, max_L, _ = h_padded.shape
@@ -264,7 +269,11 @@ class EdgeMamba3(nn.Module):
                     dist_padded[i, 1:l+1, l+1] = 1.0
                 else:
                     dist_padded[i, :l, :l] = mat
+            del dist_mats_reordered
         
+        # Free per-graph sequence list after padding
+        del h_seqs
+
         # Module 3: Mamba-3 batched execution (fixed bucketed lengths for Triton cache)
         h_enc = self.encoder(
             h_padded,

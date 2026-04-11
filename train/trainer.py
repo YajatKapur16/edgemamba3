@@ -34,6 +34,8 @@ class Trainer:
         self.config   = config
         self.device   = device
         self.run_name = run_name
+        self.use_amp  = config.get("use_amp", True) and torch.cuda.is_available()
+        self.accum_steps = max(1, int(config.get("accum_steps", 1)))
 
         self.is_dist = dist.is_available() and dist.is_initialized()
         self.rank = dist.get_rank() if self.is_dist else 0
@@ -69,6 +71,8 @@ class Trainer:
             milestones=[warmup_epochs],
         )
 
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
+
         if config.get("use_wandb", False) and self.rank == 0:
             try:
                 import wandb
@@ -99,19 +103,34 @@ class Trainer:
         self.model.train()
         total_loss = 0.0
         limit = self.config.get("limit_batches")
+        self.opt.zero_grad()
         for i, batch in enumerate(tqdm(loader, desc="Train", leave=False, file=sys.stdout, mininterval=2.0)):
             if limit and i >= limit: break
             batch = batch.to(self.device)
-            self.opt.zero_grad()
 
-            pred  = self.model(batch)
-            loss  = self.model.loss(pred, batch.y.to(self.device))
+            with torch.amp.autocast("cuda", enabled=self.use_amp):
+                pred  = self.model(batch)
+                loss  = self.model.loss(pred, batch.y.to(self.device))
+                loss  = loss / self.accum_steps  # scale for accumulation
 
-            loss.backward()
+            self.scaler.scale(loss).backward()
+
+            if (i + 1) % self.accum_steps == 0:
+                self.scaler.unscale_(self.opt)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                self.scaler.step(self.opt)
+                self.scaler.update()
+                self.opt.zero_grad()
+
+            total_loss += loss.item() * self.accum_steps  # unscale for logging
+
+        # Flush remaining gradients if last window was incomplete
+        if (i + 1) % self.accum_steps != 0:
+            self.scaler.unscale_(self.opt)
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-            self.opt.step()
-
-            total_loss += loss.item()
+            self.scaler.step(self.opt)
+            self.scaler.update()
+            self.opt.zero_grad()
 
         self.sched.step()
         return total_loss / len(loader)
@@ -121,6 +140,7 @@ class Trainer:
         self.model.train()
         total_loss = 0.0
         limit = self.config.get("limit_batches")
+        self.opt.zero_grad()
         for i, (seq, dt, mask, labels) in enumerate(tqdm(loader, desc="Train", leave=False, file=sys.stdout, mininterval=2.0)):
             if limit and i >= limit: break
             seq    = seq.to(self.device)
@@ -128,15 +148,29 @@ class Trainer:
             mask   = mask.to(self.device)
             labels = labels.to(self.device)
 
-            self.opt.zero_grad()
-            pred  = self.model(seq, dt, mask)
-            loss  = self.model.loss(pred.squeeze(-1), labels)
+            with torch.amp.autocast("cuda", enabled=self.use_amp):
+                pred  = self.model(seq, dt, mask)
+                loss  = self.model.loss(pred.squeeze(-1), labels)
+                loss  = loss / self.accum_steps
 
-            loss.backward()
+            self.scaler.scale(loss).backward()
+
+            if (i + 1) % self.accum_steps == 0:
+                self.scaler.unscale_(self.opt)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                self.scaler.step(self.opt)
+                self.scaler.update()
+                self.opt.zero_grad()
+
+            total_loss += loss.item() * self.accum_steps
+
+        # Flush remaining gradients if last window was incomplete
+        if (i + 1) % self.accum_steps != 0:
+            self.scaler.unscale_(self.opt)
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-            self.opt.step()
-
-            total_loss += loss.item()
+            self.scaler.step(self.opt)
+            self.scaler.update()
+            self.opt.zero_grad()
 
         self.sched.step()
         return total_loss / len(loader)

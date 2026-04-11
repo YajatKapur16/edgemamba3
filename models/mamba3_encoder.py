@@ -129,6 +129,7 @@ class BidirectionalMamba3(nn.Module):
         expand: int     = 2,
         headdim: int    = 64,
         use_mamba2: bool = False,
+        gradient_checkpointing: bool = False,
     ):
         super().__init__()
         self.d_model     = d_model
@@ -136,6 +137,7 @@ class BidirectionalMamba3(nn.Module):
         self.use_time    = use_time_enc
         self.use_dist    = use_dist_enc
         self.use_mamba2  = use_mamba2
+        self.gradient_checkpointing = gradient_checkpointing
 
         # Build Mamba kwargs
         mamba_kwargs = {
@@ -212,8 +214,13 @@ class BidirectionalMamba3(nn.Module):
         # Layer-wise bidirectional Mamba-3 with residual connections
         h = x
         for fwd, bwd, norm in zip(self.fwd_layers, self.bwd_layers, self.norms):
-            fwd_out = fwd(h)                               # [B, L, D]
-            bwd_out = flip_seq(bwd(flip_seq(h)))           # [B, L, D]
+            if self.gradient_checkpointing and self.training:
+                from torch.utils.checkpoint import checkpoint
+                fwd_out = checkpoint(fwd, h, use_reentrant=False)
+                bwd_out = flip_seq(checkpoint(bwd, flip_seq(h), use_reentrant=False))
+            else:
+                fwd_out = fwd(h)                               # [B, L, D]
+                bwd_out = flip_seq(bwd(flip_seq(h)))           # [B, L, D]
 
             # Merge directions
             combined = self.out_proj(
