@@ -1,0 +1,6 @@
+Amazon LTV - EdgeMamba3 (3 seeds)
+==================================================
+MAE (Mean +/- Std): 0.8568 +/- 0.0070
+  Seed 0: Val=0.8373, Test=0.8486, BestEp=27, Stopped=32
+  Seed 1: Val=0.8444, Test=0.8561, BestEp=29, Stopped=34
+  Seed 2: Val=0.8506, Test=0.8658, BestEp=25, Stopped=30

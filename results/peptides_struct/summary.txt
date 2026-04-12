@@ -1,0 +1,6 @@
+Peptides-struct - EdgeMamba3 (3 seeds)
+==================================================
+MAE (Mean +/- Std): 0.2484 +/- 0.0005
+  Seed 0: Val=0.2364, Test=0.2478, BestEp=111, Stopped=141
+  Seed 1: Val=0.2424, Test=0.2491, BestEp=130, Stopped=160
+  Seed 2: Val=0.2336, Test=0.2483, BestEp=138, Stopped=168

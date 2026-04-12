@@ -1,0 +1,6 @@
+HM User-Churn - EdgeMamba3 (3 seeds)
+==================================================
+AUROC (Mean +/- Std): 0.9567 +/- 0.0020
+  Seed 0: Val=0.9692, Test=0.9541, BestEp=22, Stopped=27
+  Seed 1: Val=0.9739, Test=0.9589, BestEp=23, Stopped=28
+  Seed 2: Val=0.9724, Test=0.9571, BestEp=22, Stopped=27

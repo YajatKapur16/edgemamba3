@@ -1,0 +1,6 @@
+Peptides-func - EdgeMamba3 (3 seeds)
+==================================================
+AP (Mean +/- Std): 0.6622 +/- 0.0010
+  Seed 0: Val=0.668, Test=0.6621, BestEp=114, Stopped=144
+  Seed 1: Val=0.6805, Test=0.6634, BestEp=131, Stopped=161
+  Seed 2: Val=0.672, Test=0.661, BestEp=142, Stopped=172

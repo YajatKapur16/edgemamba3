@@ -1,0 +1,146 @@
+{
+  "Full EdgeMamba3": {
+    "pep_func": {
+      "mean": 0.6734,
+      "std": 0.001
+    },
+    "pep_struct": {
+      "mean": 0.2395,
+      "std": 0.0007
+    },
+    "hm_churn": {
+      "mean": 0.9721,
+      "std": 0.002
+    },
+    "amazon_ltv": {
+      "mean": 0.8454,
+      "std": 0.007
+    }
+  },
+  "- LTAS (random order)": {
+    "pep_func": {
+      "mean": 0.6352,
+      "std": 0.0071
+    },
+    "pep_struct": {
+      "mean": 0.2544,
+      "std": 0.0044
+    },
+    "hm_churn": {
+      "mean": null,
+      "std": null
+    },
+    "amazon_ltv": {
+      "mean": null,
+      "std": null
+    }
+  },
+  "- Line Graph (node-based)": {
+    "pep_func": {
+      "mean": 0.622,
+      "std": 0.0082
+    },
+    "pep_struct": {
+      "mean": 0.2633,
+      "std": 0.0052
+    },
+    "hm_churn": {
+      "mean": null,
+      "std": null
+    },
+    "amazon_ltv": {
+      "mean": null,
+      "std": null
+    }
+  },
+  "- Temporal Order (random)": {
+    "pep_func": {
+      "mean": null,
+      "std": null
+    },
+    "pep_struct": {
+      "mean": null,
+      "std": null
+    },
+    "hm_churn": {
+      "mean": 0.9397,
+      "std": 0.0061
+    },
+    "amazon_ltv": {
+      "mean": 0.8797,
+      "std": 0.0121
+    }
+  },
+  "- Bidirectional (fwd only)": {
+    "pep_func": {
+      "mean": 0.6492,
+      "std": 0.0063
+    },
+    "pep_struct": {
+      "mean": 0.2482,
+      "std": 0.0038
+    },
+    "hm_churn": {
+      "mean": 0.9529,
+      "std": 0.0055
+    },
+    "amazon_ltv": {
+      "mean": 0.8676,
+      "std": 0.0102
+    }
+  },
+  "- Drop Path": {
+    "pep_func": {
+      "mean": 0.661,
+      "std": 0.0049
+    },
+    "pep_struct": {
+      "mean": 0.241,
+      "std": 0.0035
+    },
+    "hm_churn": {
+      "mean": 0.9647,
+      "std": 0.0038
+    },
+    "amazon_ltv": {
+      "mean": 0.8495,
+      "std": 0.0078
+    }
+  },
+  "- Label Smoothing": {
+    "pep_func": {
+      "mean": 0.6555,
+      "std": 0.0066
+    },
+    "pep_struct": {
+      "mean": 0.2411,
+      "std": 0.0029
+    },
+    "hm_churn": {
+      "mean": 0.9641,
+      "std": 0.0045
+    },
+    "amazon_ltv": {
+      "mean": 0.8474,
+      "std": 0.0093
+    }
+  },
+  "Mamba-2 (no Mamba-3)": {
+    "pep_func": {
+      "mean": 0.6508,
+      "std": 0.0074
+    },
+    "pep_struct": {
+      "mean": 0.2503,
+      "std": 0.0041
+    },
+    "hm_churn": {
+      "mean": 0.9565,
+      "std": 0.0051
+    },
+    "amazon_ltv": {
+      "mean": 0.8706,
+      "std": 0.0115
+    }
+  }
+}
