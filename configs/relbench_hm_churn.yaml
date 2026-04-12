@@ -11,10 +11,10 @@ d_state: 32
 mimo_rank: 4
 dropout: 0.1
 
-lr: 0.001
+lr: 0.0003
 weight_decay: 1e-5
 min_lr: 1e-6
-batch_size: 1024
+batch_size: 512
 epochs: 100
 patience: 20
 gradient_checkpointing: false

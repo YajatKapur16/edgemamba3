@@ -80,6 +80,14 @@ class RelBenchEventDataset(Dataset):
         max_seq_len: int = 256,
         min_seq_len: int = 1,
     ):
+        # Filter out entities with NaN labels (RelBench can have unknown targets)
+        valid_mask = ~torch.isnan(labels)
+        if not valid_mask.all():
+            n_dropped = (~valid_mask).sum().item()
+            print(f"    Dropping {n_dropped}/{len(labels)} entities with NaN labels", flush=True)
+            entity_ids = entity_ids[valid_mask]
+            labels = labels[valid_mask]
+
         self.entity_ids       = entity_ids
         self.labels           = labels
         self.event_features   = event_features
@@ -400,13 +408,19 @@ def _encode_features(df: pd.DataFrame, cols: list) -> torch.Tensor:
     """
     Simple feature encoding: numeric cols pass through,
     categorical cols are label-encoded.
-    Fills NaN with 0.
+    Fills NaN with 0. Applies per-column standardization to prevent
+    float16 overflow under AMP.
     """
     encoded = []
     for col in cols:
         series = df[col]
         if series.dtype in [np.float64, np.float32, np.int64, np.int32]:
-            encoded.append(series.fillna(0).values.astype(np.float32))
+            vals = series.fillna(0).values.astype(np.float32)
+            # Standardize numeric features to prevent AMP float16 overflow
+            std = vals.std()
+            if std > 0:
+                vals = (vals - vals.mean()) / std
+            encoded.append(vals)
         else:
             # Label encode
             codes, _ = pd.factorize(series.fillna("__missing__"))

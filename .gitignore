@@ -29,7 +29,6 @@ env/
 
 # ── Training artifacts ────────────────────────────────────────────
 checkpoints/
-results/
 wandb/
 runs/
 *.pt

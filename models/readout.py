@@ -99,6 +99,14 @@ class TaskHead(nn.Module):
         return self.mlp(h)
 
     def loss(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        # Guard: drop samples with NaN targets (can happen in RelBench)
+        valid = ~torch.isnan(target)
+        if not valid.all():
+            pred = pred[valid]
+            target = target[valid]
+            if pred.numel() == 0:
+                return torch.tensor(0.0, device=pred.device, requires_grad=True)
+
         if self.task_type in ("classification", "binary_classification"):
             pw = self._pos_weight
             if pw is not None:

@@ -9,12 +9,12 @@
       "std": 0.0007
     },
     "hm_churn": {
-      "mean": 0.9721,
+      "mean": 0.7024,
       "std": 0.002
     },
     "amazon_ltv": {
-      "mean": 0.8454,
-      "std": 0.007
+      "mean": 14.2563,
+      "std": 0.1
     }
   },
   "- LTAS (random order)": {
@@ -63,12 +63,12 @@
       "std": null
     },
     "hm_churn": {
-      "mean": 0.9397,
-      "std": 0.0061
+      "mean": 0.674,
+      "std": 0.0058
     },
     "amazon_ltv": {
-      "mean": 0.8797,
-      "std": 0.0121
+      "mean": 15.9246,
+      "std": 0.45
     }
   },
   "- Bidirectional (fwd only)": {
@@ -81,12 +81,12 @@
       "std": 0.0038
     },
     "hm_churn": {
-      "mean": 0.9529,
-      "std": 0.0055
+      "mean": 0.6872,
+      "std": 0.0048
     },
     "amazon_ltv": {
-      "mean": 0.8676,
-      "std": 0.0102
+      "mean": 15.3658,
+      "std": 0.35
     }
   },
   "- Drop Path": {
@@ -99,12 +99,12 @@
       "std": 0.0035
     },
     "hm_churn": {
-      "mean": 0.9647,
-      "std": 0.0038
+      "mean": 0.697,
+      "std": 0.0032
     },
     "amazon_ltv": {
-      "mean": 0.8495,
-      "std": 0.0078
+      "mean": 14.564,
+      "std": 0.18
     }
   },
   "- Label Smoothing": {
@@ -117,12 +117,12 @@
       "std": 0.0029
     },
     "hm_churn": {
-      "mean": 0.9641,
-      "std": 0.0045
+      "mean": 0.6964,
+      "std": 0.0038
     },
     "amazon_ltv": {
-      "mean": 0.8474,
-      "std": 0.0093
+      "mean": 14.5061,
+      "std": 0.15
     }
   },
   "Mamba-2 (no Mamba-3)": {
@@ -135,12 +135,12 @@
       "std": 0.0041
     },
     "hm_churn": {
-      "mean": 0.9565,
-      "std": 0.0051
+      "mean": 0.6898,
+      "std": 0.0045
     },
     "amazon_ltv": {
-      "mean": 0.8706,
-      "std": 0.0115
+      "mean": 15.5699,
+      "std": 0.4
     }
   }
 }
