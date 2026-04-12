@@ -264,12 +264,67 @@ def load_relbench(
         meta = cached_data["meta"]
         print(f"  Loaded in {time.time()-t0:.2f}s", flush=True)
 
+        needs_resave = False
+
         # Rebuild index if cache was created before contiguous pre-gather optimization
         for split_ds in splits.values():
             if not hasattr(split_ds, 'sorted_features'):
                 print(f"  Rebuilding index for {len(split_ds)} entities (cache upgrade)...", flush=True)
                 split_ds._build_index()
-        
+                needs_resave = True
+
+        # Filter NaN labels (cache may predate this fix)
+        for split_name, split_ds in splits.items():
+            valid = ~torch.isnan(split_ds.labels)
+            if not valid.all():
+                n_drop = (~valid).sum().item()
+                print(f"  [{split_name}] Dropping {n_drop}/{len(split_ds.labels)} entities with NaN labels (cache upgrade)", flush=True)
+                keep = valid.nonzero(as_tuple=True)[0]
+                split_ds.entity_ids = split_ds.entity_ids[keep]
+                split_ds.labels = split_ds.labels[keep]
+                split_ds.counts = split_ds.counts[keep]
+                split_ds.starts = torch.cat([torch.tensor([0]), split_ds.counts.cumsum(0)[:-1]])
+                # Rebuild contiguous storage for kept entities
+                new_feats, new_ts, new_dt = [], [], []
+                for i in range(len(split_ds.entity_ids)):
+                    c = split_ds.counts[i].item()
+                    if c > 0:
+                        s = split_ds.starts[i].item()
+                        new_feats.append(split_ds.sorted_features[s:s+c])
+                        new_ts.append(split_ds.sorted_timestamps[s:s+c])
+                        new_dt.append(split_ds.sorted_dt[s:s+c])
+                if new_feats:
+                    split_ds.sorted_features = torch.cat(new_feats)
+                    split_ds.sorted_timestamps = torch.cat(new_ts)
+                    split_ds.sorted_dt = torch.cat(new_dt)
+                else:
+                    feat_dim = split_ds.sorted_features.shape[1]
+                    split_ds.sorted_features = torch.empty(0, feat_dim)
+                    split_ds.sorted_timestamps = torch.empty(0)
+                    split_ds.sorted_dt = torch.empty(0)
+                # Recompute starts from new counts
+                split_ds.starts = torch.cat([torch.tensor([0]), split_ds.counts.cumsum(0)[:-1]])
+                needs_resave = True
+
+        # Normalize features if cache predates standardization fix
+        for split_name, split_ds in splits.items():
+            if hasattr(split_ds, 'sorted_features') and split_ds.sorted_features.numel() > 0:
+                feat_std = split_ds.sorted_features.std(dim=0)
+                # If any column has std > 10, it's likely unnormalized
+                if (feat_std > 10).any():
+                    print(f"  [{split_name}] Normalizing features (cache upgrade)", flush=True)
+                    feat_mean = split_ds.sorted_features.mean(dim=0)
+                    feat_std = feat_std.clamp(min=1e-8)
+                    split_ds.sorted_features = (split_ds.sorted_features - feat_mean) / feat_std
+                    needs_resave = True
+
+        if needs_resave:
+            try:
+                torch.save({"splits": splits, "meta": meta}, cache_path)
+                print(f"  Cache upgraded and re-saved.", flush=True)
+            except Exception as e:
+                print(f"  Warning: could not re-save cache: {e}", flush=True)
+
         actual_workers = 0 if os.name == 'nt' else num_workers
         persistent = actual_workers > 0
         return _build_loaders_from_splits(splits, meta, batch_size, actual_workers, persistent)

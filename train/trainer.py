@@ -51,7 +51,7 @@ class Trainer:
         if self.is_dist:
             # Need to pass list of actual mapped dev IDs, e.g. [0] if device is 'cuda:0'
             dev_id = [int(re.findall(r'\d+', str(device))[0])] if 'cuda:' in str(device) else None
-            self.model = DDP(self.model, device_ids=dev_id, find_unused_parameters=True)
+            self.model = DDP(self.model, device_ids=dev_id, find_unused_parameters=False)
 
         # Unwrapped model reference for accessing custom methods (.loss(), etc.)
         self._raw_model = self.model.module if self.is_dist else self.model
@@ -192,6 +192,11 @@ class Trainer:
                 pred  = self.model(seq, dt, mask)
                 loss  = self._raw_model.loss(pred.squeeze(-1), labels)
                 loss  = loss / self.accum_steps
+
+            # Skip batch if loss is NaN/Inf (prevents poisoning all params)
+            if not torch.isfinite(loss):
+                self.opt.zero_grad()
+                continue
 
             self.scaler.scale(loss).backward()
 
