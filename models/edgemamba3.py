@@ -54,6 +54,7 @@ class EdgeMamba3(nn.Module):
         use_virtual_node: bool = False,
         use_mamba2: bool    = False,
         gradient_checkpointing: bool = False,
+        label_smoothing: float = 0.0,
     ):
         super().__init__()
         assert domain in ("lrgb", "relbench"), f"Unknown domain: {domain}"
@@ -100,7 +101,7 @@ class EdgeMamba3(nn.Module):
 
         # ── Module 4: Readout + Task Head ──────────────────────────────────
         self.pool = AttentionPool(d_model)
-        self.head = TaskHead(d_model, num_outputs, task_type, dropout)
+        self.head = TaskHead(d_model, num_outputs, task_type, dropout, label_smoothing=label_smoothing)
 
     # ── LRGB Forward ──────────────────────────────────────────────────────────
     def forward_lrgb(self, data: Data) -> torch.Tensor:

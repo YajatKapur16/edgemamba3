@@ -55,6 +55,7 @@ def _build_model(config, domain, meta):
             drop_path=config.get("drop_path", 0.0),
             use_virtual_node=config.get("use_virtual_node", False),
             gradient_checkpointing=config.get("gradient_checkpointing", False),
+            label_smoothing=config.get("label_smoothing", 0.0),
         )
     else:
         return EdgeMamba3(

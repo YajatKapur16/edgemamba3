@@ -53,8 +53,10 @@ def main(config_path: str):
             num_outputs=cfg["num_outputs"],
             task_type=cfg["task_type"],
             dropout=cfg["dropout"],
+            drop_path=cfg.get("drop_path", 0.0),
             use_virtual_node=cfg.get("use_virtual_node", False),
             gradient_checkpointing=cfg.get("gradient_checkpointing", False),
+            label_smoothing=cfg.get("label_smoothing", 0.0),
         )
 
         save_path = cfg["save_path"].replace(".pt", f"_seed{seed}.pt")

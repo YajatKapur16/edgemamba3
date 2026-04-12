@@ -71,11 +71,13 @@ class TaskHead(nn.Module):
         num_outputs: int,
         task_type: str,
         dropout: float = 0.1,
+        label_smoothing: float = 0.0,
     ):
         super().__init__()
         assert task_type in ("classification", "regression",
                              "binary_classification")
         self.task_type = task_type
+        self.label_smoothing = label_smoothing
         self._pos_weight = None
 
         self.mlp = nn.Sequential(
@@ -101,8 +103,11 @@ class TaskHead(nn.Module):
             pw = self._pos_weight
             if pw is not None:
                 pw = pw.to(pred.device)
+            t = target.float()
+            if self.label_smoothing > 0.0:
+                t = t * (1.0 - self.label_smoothing) + 0.5 * self.label_smoothing
             return nn.functional.binary_cross_entropy_with_logits(
-                pred, target.float(), pos_weight=pw
+                pred, t, pos_weight=pw
             )
         else:
             return nn.functional.l1_loss(pred, target.float())
